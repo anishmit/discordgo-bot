@@ -1,4 +1,4 @@
-module github.com/anishmit/discordgobot
+module github.com/anishmit/discordgo-bot
 
 go 1.24.2
 

@@ -5,8 +5,8 @@ import (
 	"os/signal"
 	"github.com/bwmarrin/discordgo"
 	"log"
-	"github.com/anishmit/discordgobot/internal/handlers"
-	"github.com/anishmit/discordgobot/internal/commands"
+	"github.com/anishmit/discordgo-bot/internal/handlers"
+	"github.com/anishmit/discordgo-bot/internal/commands"
 	_ "github.com/joho/godotenv/autoload"
 )
 

@@ -14,7 +14,7 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/yuin/goldmark"
 	"google.golang.org/genai"
-	"github.com/anishmit/discordgobot/internal/clients"
+	"github.com/anishmit/discordgo-bot/internal/clients"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"time"
 	"sort"
 	"fmt"
-	"github.com/anishmit/discordgobot/internal/clients"
+	"github.com/anishmit/discordgo-bot/internal/clients"
 )
 
 type timePeriod struct {

@@ -7,7 +7,7 @@ import (
 	"time"
 	"github.com/bwmarrin/discordgo"
 	"google.golang.org/genai"
-	"github.com/anishmit/discordgobot/internal/clients"
+	"github.com/anishmit/discordgo-bot/internal/clients"
 )
 
 func init() {
