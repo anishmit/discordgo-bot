@@ -105,7 +105,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				startTime := time.Now()
 				res, err := clients.GeminiClient.Models.GenerateContent(
 					ctx,
-					"gemini-2.5-pro-preview-03-25", 
+					"gemini-2.5-pro-preview-05-06", 
 					contentHistory[m.ChannelID], 
 					&genai.GenerateContentConfig{
 						SafetySettings: []*genai.SafetySetting{
