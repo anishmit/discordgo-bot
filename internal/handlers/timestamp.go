@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	registerCommandHandler("timestamp", timestampCommandHandler)
+	registerCommandHandler("Timestamp", timestampCommandHandler)
 }
 
 func timestampCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
