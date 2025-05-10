@@ -12,10 +12,10 @@ var devCommands = []*discordgo.ApplicationCommand{
 		Description: "Play YouTube video",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionString,
-				Name: "query",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "query",
 				Description: "Search query",
-				Required: true,
+				Required:    true,
 			},
 		},
 	},
@@ -23,54 +23,54 @@ var devCommands = []*discordgo.ApplicationCommand{
 
 var globalCommands = []*discordgo.ApplicationCommand{
 	{
-		Name: "first",
+		Name:        "first",
 		Description: "Data about first messages",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Name: "count",
+				Name:        "count",
 				Description: "Leaderboard for number of first messages",
-				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 			},
 			{
-				Name: "time",
+				Name:        "time",
 				Description: "Leaderboard for fastest first messages",
-				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 			},
 		},
 	},
 	{
-		Name: "imagen",
+		Name:        "imagen",
 		Description: "Generate an image with Imagen 3",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionString,
-				Name: "prompt",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "prompt",
 				Description: "Prompt used for generated image",
-				Required: true,	
+				Required:    true,
 			},
 			{
-				Type: discordgo.ApplicationCommandOptionString,
-				Name: "aspect_ratio",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "aspect_ratio",
 				Description: "Aspect ratio used for generated image",
 				Choices: []*discordgo.ApplicationCommandOptionChoice{
 					{
-						Name: "1:1",
+						Name:  "1:1",
 						Value: "1:1",
 					},
 					{
-						Name: "9:16",
+						Name:  "9:16",
 						Value: "9:16",
 					},
 					{
-						Name: "16:9",
+						Name:  "16:9",
 						Value: "16:9",
 					},
 					{
-						Name: "3:4",
+						Name:  "3:4",
 						Value: "3:4",
 					},
 					{
-						Name: "4:3",
+						Name:  "4:3",
 						Value: "4:3",
 					},
 				},
@@ -78,14 +78,14 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name: "send",
+		Name:        "send",
 		Description: "Schedule sending a message at a Unix epoch time in milliseconds",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionInteger,
-				Name: "time",
+				Type:        discordgo.ApplicationCommandOptionInteger,
+				Name:        "time",
 				Description: "Unix epoch time in milliseconds",
-				Required: true,
+				Required:    true,
 			},
 		},
 	},
@@ -98,10 +98,22 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Search Urban Dictionary",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionString,
-				Name: "term",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "term",
 				Description: "Term to search for",
-				Required: true,
+				Required:    true,
+			},
+		},
+	},
+	{
+		Name:        "latex",
+		Description: "Render LaTeX math",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "expression",
+				Description: "Expression to render",
+				Required:    true,
 			},
 		},
 	},

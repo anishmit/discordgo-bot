@@ -60,7 +60,7 @@ func imagenCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	// Respond to interaction with image
 	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 		Content: fmt.Sprintf(
-			"-# Generated in %0.1f seconds\n`%s`", 
+			"-# %0.1fs\n`%s`", 
 			time.Since(startTime).Seconds(),
 			prompt[:min(len(prompt), 1950)],
 		),
