@@ -107,14 +107,32 @@ var globalCommands = []*discordgo.ApplicationCommand{
 	},
 	{
 		Name:        "latex",
-		Description: "Render LaTeX math",
+		Description: "LaTeX game",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "expression",
-				Description: "Expression to render",
-				Required:    true,
+				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Name: "answer",
+				Description: "Answer LaTeX problem",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type: discordgo.ApplicationCommandOptionString,
+						Name: "latex",
+						Description: "LaTeX to render",
+						Required: true,
+					},
+				},
 			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Name: "problem",
+				Description: "Get new LaTeX problem",
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Name: "leaderboard",
+				Description: "Get LaTeX leaderboard",
+			},
+			
 		},
 	},
 }
