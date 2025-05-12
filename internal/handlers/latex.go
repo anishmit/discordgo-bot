@@ -143,7 +143,6 @@ func latexAnswerCommandHandler(s *discordgo.Session) {
 	}
 	for _, problem := range latexProblems[i.ChannelID] {
 		if equalImages(problem.image, img) {
-			log.Println("Solved", problem.id)
 			problemRef := ref.Child(problem.id)
 			var bestSolution string
 			problemRef.Child("bestSolution").Transaction(ctx, func(value db.TransactionNode) (any, error) {
@@ -331,7 +330,6 @@ func equalImages(img1, img2 image.Image) bool {
 			}
 		}
 	}
-	log.Println("Similarity", float64(equalPixels) / float64(i1Bounds.Dx() * i1Bounds.Dy()) * 100)
 	if float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy()) {
 		return true
 	}
