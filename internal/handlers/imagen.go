@@ -29,7 +29,7 @@ func imagenCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	prompt := optionMap["prompt"].StringValue()
 	config := &genai.GenerateImagesConfig{
 		NumberOfImages: 1,
-		PersonGeneration: genai.PersonGenerationAllowAdult,
+		PersonGeneration: genai.PersonGenerationAllowAll,
 	}
 	if option, ok := optionMap["aspect_ratio"]; ok {
 		config.AspectRatio = option.StringValue()
