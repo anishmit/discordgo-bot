@@ -111,7 +111,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				}
 				if groundingFlags[m.ChannelID][m.Author.ID] {
 					config.Tools = []*genai.Tool{
-						{GoogleSearchRetrieval: &genai.GoogleSearchRetrieval{}},
+						{GoogleSearch : &genai.GoogleSearch{}},
 					}
 				}
 				res, err := clients.GeminiClient.Models.GenerateContent(
