@@ -4,13 +4,13 @@ go 1.24.2
 
 require (
 	firebase.google.com/go/v4 v4.15.2
-	github.com/bwmarrin/discordgo v0.28.1
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/chromedp/cdproto v0.0.0-20250429231605-6ed5b53462d4
 	github.com/chromedp/chromedp v0.13.6
 	github.com/joho/godotenv v1.5.1
 	github.com/yuin/goldmark v1.7.11
 	google.golang.org/api v0.232.0
-	google.golang.org/genai v1.3.0
+	google.golang.org/genai v1.14.0
 )
 
 require (

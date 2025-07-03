@@ -132,8 +132,11 @@ var globalCommands = []*discordgo.ApplicationCommand{
 				Name: "leaderboard",
 				Description: "Get LaTeX leaderboard",
 			},
-			
 		},
+	},
+	{
+		Name: "grounding",
+		Description: "Toggle Grounding with Google Search for Gemini",
 	},
 }
 

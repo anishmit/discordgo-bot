@@ -330,8 +330,5 @@ func equalImages(img1, img2 image.Image) bool {
 			}
 		}
 	}
-	if float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy()) {
-		return true
-	}
-	return false
+	return float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy())
 }
