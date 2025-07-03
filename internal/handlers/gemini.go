@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"mime"
 	"time"
 	"github.com/bwmarrin/discordgo"
 	"github.com/chromedp/cdproto/page"
@@ -80,11 +81,17 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					log.Println("Error getting attachment", err)
 				} else {
 					defer resp.Body.Close()
-					if data, err := io.ReadAll(resp.Body); err != nil {
+					data, err := io.ReadAll(resp.Body)
+					if err != nil {
 						log.Println("Error getting attachment data", err)
-					} else {
-						parts = append(parts, genai.NewPartFromBytes(data, attachment.ContentType))
+						return
 					}
+					mediatype, _, err := mime.ParseMediaType(attachment.ContentType)
+					if err != nil {
+						log.Println("Error parsing attachment content type", err)
+						return
+					}
+					parts = append(parts, genai.NewPartFromBytes(data, mediatype))
 				}
 			}()
 		}
