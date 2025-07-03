@@ -207,6 +207,9 @@ func groundingCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 	} else if i.User != nil {
 		userID = i.User.ID
 	}
+	if _, ok := groundingFlags[i.ChannelID]; !ok {
+		groundingFlags[i.ChannelID] = make(map[string]bool)
+	}
 	groundingFlag := !groundingFlags[i.ChannelID][userID]
 	groundingFlags[i.ChannelID][userID] = groundingFlag
 	var content string
