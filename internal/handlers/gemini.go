@@ -41,6 +41,7 @@ var groundingFlags = map[string]map[string]bool{}
 
 func init() {
 	registerMessageCreateHandler(geminiMsgCreateHandler)
+	registerCommandHandler("grounding", groundingCommandHandler)
 }
 
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
