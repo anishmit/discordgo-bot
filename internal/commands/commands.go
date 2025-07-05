@@ -135,8 +135,39 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name: "grounding",
-		Description: "Toggle Grounding with Google Search for Gemini",
+		Name:        "gemini",
+		Description: "Configure Gemini settings",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Name: "grounding",
+				Description: "Toggle Grounding with Google Search",
+			},
+			{
+				Type: discordgo.ApplicationCommandOptionSubCommand,
+				Name: "model",
+				Description: "Change model",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type: discordgo.ApplicationCommandOptionString,
+						Name: "name",
+						Description: "Model name",
+						Required: true,
+						Choices: []*discordgo.ApplicationCommandOptionChoice{
+							{
+								Name:  "Gemini 2.5 Pro",
+								Value: "gemini-2.5-pro",
+							},
+							{
+								Name:  "Gemini 2.5 Flash ",
+								Value: "gemini-2.5-flash",
+							},
+						},
+					},
+				},
+				
+			},
+		},
 	},
 }
 
