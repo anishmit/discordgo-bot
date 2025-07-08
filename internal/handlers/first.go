@@ -45,7 +45,7 @@ var (
 
 func init() {
 	var err error
-	location, err = time.LoadLocation("America/Detroit")
+	location, err = time.LoadLocation("America/Los_Angeles")
 	if err != nil {
 		log.Fatalln("Error loading location", err)
 	}
