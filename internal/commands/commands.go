@@ -75,6 +75,26 @@ var globalCommands = []*discordgo.ApplicationCommand{
 					},
 				},
 			},
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "model",
+				Description: "Model used to generate image",
+				Choices: []*discordgo.ApplicationCommandOptionChoice{
+					{
+						Name:  "Imagen 4",
+						Value: "imagen-4.0-generate-preview-06-06",
+					},
+					{
+						Name:  "Imagen 4 Ultra",
+						Value: "imagen-4.0-ultra-generate-preview-06-06",
+					},
+					{
+						Name:  "Imagen 3",
+						Value: "imagen-3.0-generate-002",
+					},
+				},
+			},
+			
 		},
 	},
 	{
@@ -165,7 +185,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 						},
 					},
 				},
-				
 			},
 		},
 	},
