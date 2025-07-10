@@ -40,7 +40,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 	},
 	{
 		Name:        "imagen",
-		Description: "Generate an image with Imagen 3",
+		Description: "Generate an image with Imagen",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionString,
