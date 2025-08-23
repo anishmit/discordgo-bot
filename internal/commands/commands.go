@@ -82,11 +82,15 @@ var globalCommands = []*discordgo.ApplicationCommand{
 				Choices: []*discordgo.ApplicationCommandOptionChoice{
 					{
 						Name:  "Imagen 4",
-						Value: "imagen-4.0-generate-preview-06-06",
+						Value: "imagen-4.0-generate-001",
 					},
 					{
 						Name:  "Imagen 4 Ultra",
-						Value: "imagen-4.0-ultra-generate-preview-06-06",
+						Value: "imagen-4.0-ultra-generate-001",
+					},
+					{
+						Name:  "Imagen 4 Fast Generate",
+						Value: "imagen-4.0-fast-generate-001",
 					},
 					{
 						Name:  "Imagen 3",
@@ -94,7 +98,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 					},
 				},
 			},
-			
 		},
 	},
 	{
@@ -130,26 +133,26 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "LaTeX game",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommand,
-				Name: "answer",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "answer",
 				Description: "Answer LaTeX problem",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
-						Type: discordgo.ApplicationCommandOptionString,
-						Name: "latex",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Name:        "latex",
 						Description: "LaTeX to render",
-						Required: true,
+						Required:    true,
 					},
 				},
 			},
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommand,
-				Name: "problem",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "problem",
 				Description: "Get new LaTeX problem",
 			},
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommand,
-				Name: "leaderboard",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "leaderboard",
 				Description: "Get LaTeX leaderboard",
 			},
 		},
@@ -159,20 +162,20 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Configure Gemini settings",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommand,
-				Name: "grounding",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "grounding",
 				Description: "Toggle Grounding with Google Search",
 			},
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommand,
-				Name: "model",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "model",
 				Description: "Change model",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
-						Type: discordgo.ApplicationCommandOptionString,
-						Name: "name",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Name:        "name",
 						Description: "Model name",
-						Required: true,
+						Required:    true,
 						Choices: []*discordgo.ApplicationCommandOptionChoice{
 							{
 								Name:  "Gemini 2.5 Pro",

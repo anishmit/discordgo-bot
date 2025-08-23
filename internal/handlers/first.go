@@ -2,34 +2,37 @@ package handlers
 
 import (
 	"context"
-	"log"
 	"firebase.google.com/go/v4/db"
-	"github.com/bwmarrin/discordgo"
-	"time"
-	"sort"
 	"fmt"
 	"github.com/anishmit/discordgo-bot/internal/clients"
+	"github.com/bwmarrin/discordgo"
+	"log"
+	"sort"
+	"time"
 )
 
 type timePeriod struct {
 	name string
 	days int
-}	
+}
 type firstMessage struct {
-	Content string `json:"content"`
-	Time int64 `json:"date"`
-	MsgID string `json:"msgId"`
-	UserID string `json:"userId"`
+	Content  string `json:"content"`
+	Time     int64  `json:"date"`
+	MsgID    string `json:"msgId"`
+	UserID   string `json:"userId"`
+	TimeZone string `json:"timeZone"`
 }
 type firstMessageSpeed struct {
 	speed int64
-	date string
+	date  string
 }
 
 const (
-	serverID = "407302806241017866"
-	channelID = "407302806241017868"
+	curTimeZone = "America/Los_Angeles"
+	serverID    = "407302806241017866"
+	channelID   = "407302806241017868"
 )
+
 var (
 	timePeriods = [5]timePeriod{
 		{name: "Today", days: 1},
@@ -38,17 +41,19 @@ var (
 		{name: "Past Year", days: 365},
 		{name: "All Time", days: 1e9},
 	}
-	location *time.Location
+	curLocation        *time.Location
 	channelCreatedTime time.Time
-	dbRef *db.Ref
+	dbRef              *db.Ref
+	locations          = map[string]*time.Location{}
 )
 
 func init() {
 	var err error
-	location, err = time.LoadLocation("America/Los_Angeles")
+	curLocation, err = time.LoadLocation(curTimeZone)
 	if err != nil {
 		log.Fatalln("Error loading location", err)
 	}
+	locations[curTimeZone] = curLocation
 
 	dbRef = clients.FirebaseDBClient.NewRef("firstMessages")
 
@@ -78,7 +83,7 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			log.Println("Error getting interaction time", err)
 			return
 		}
-		curTime = curTime.In(location)
+		curTime = curTime.In(curLocation)
 
 		var timePeriodsData [len(timePeriods)]map[string]int
 		for i := range timePeriodsData {
@@ -95,7 +100,7 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				}
 			}
 			curTime = curTime.AddDate(0, 0, -1)
-			daysSubtracted++;
+			daysSubtracted++
 		}
 
 		fields := make([]*discordgo.MessageEmbedField, 0, len(timePeriods))
@@ -104,24 +109,24 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			for userID := range timePeriodData {
 				userIDs = append(userIDs, userID)
 			}
-			sort.Slice(userIDs, func(i, j int) bool { 
-				return timePeriodData[userIDs[i]] > timePeriodData[userIDs[j]] 
+			sort.Slice(userIDs, func(i, j int) bool {
+				return timePeriodData[userIDs[i]] > timePeriodData[userIDs[j]]
 			})
 			var fieldValue string
 			for _, userID := range userIDs {
 				fieldValue += fmt.Sprintf("<@%s>: %d\n", userID, timePeriodData[userID])
 			}
 			fields = append(fields, &discordgo.MessageEmbedField{
-				Name: timePeriods[i].name,
+				Name:  timePeriods[i].name,
 				Value: fieldValue,
 			})
 		}
-		
+
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 			Embeds: []*discordgo.MessageEmbed{
 				{
-					Title: "First Leaderboard (Count)",
-					Color: 0xff4d01,
+					Title:  "First Leaderboard (Count)",
+					Color:  0xff4d01,
 					Fields: fields,
 				},
 			},
@@ -129,29 +134,42 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case "time":
 		firstMessageSpeeds := make([]firstMessageSpeed, 0, len(data))
 		for dateStr, firstMessage := range data {
-			if t, err := time.ParseInLocation(time.DateOnly, dateStr, location); err != nil {
-				log.Println("Error parsing location", err)
-			} else {
-				firstMessageSpeeds = append(firstMessageSpeeds, firstMessageSpeed{
-					speed: firstMessage.Time - t.UnixMilli(),
-					date: dateStr,
-				})
+			var err error
+			loc, ok := locations[firstMessage.TimeZone]
+			if !ok {
+				loc, err = time.LoadLocation(firstMessage.TimeZone)
+				if err != nil {
+					log.Println("Error loading location", err)
+					continue
+				}
+				locations[firstMessage.TimeZone] = loc
 			}
+
+			t, err := time.ParseInLocation(time.DateOnly, dateStr, loc)
+			if err != nil {
+				log.Println("Error parsing location", err)
+				continue
+			}
+
+			firstMessageSpeeds = append(firstMessageSpeeds, firstMessageSpeed{
+				speed: firstMessage.Time - t.UnixMilli(),
+				date:  dateStr,
+			})
 		}
-		sort.Slice(firstMessageSpeeds, func(i, j int) bool { 
+		sort.Slice(firstMessageSpeeds, func(i, j int) bool {
 			if firstMessageSpeeds[i].speed == firstMessageSpeeds[j].speed {
 				return firstMessageSpeeds[i].date < firstMessageSpeeds[j].date
 			}
-			return firstMessageSpeeds[i].speed < firstMessageSpeeds[j].speed 
+			return firstMessageSpeeds[i].speed < firstMessageSpeeds[j].speed
 		})
 		var description string
 		for i := range min(25, len(data)) {
 			firstMessage := data[firstMessageSpeeds[i].date]
 			description += fmt.Sprintf(
-				"%d. <@%s>: **%d** ms on [%s](https://discord.com/channels/%s/%s/%s)\n", 
-				i + 1, 
-				firstMessage.UserID, 
-				firstMessageSpeeds[i].speed, 
+				"%d. <@%s>: **%d** ms on [%s](https://discord.com/channels/%s/%s/%s)\n",
+				i+1,
+				firstMessage.UserID,
+				firstMessageSpeeds[i].speed,
 				firstMessageSpeeds[i].date,
 				serverID,
 				channelID,
@@ -161,8 +179,8 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 			Embeds: []*discordgo.MessageEmbed{
 				{
-					Title: "First Leaderboard (Time)",
-					Color: 0xff4d01,
+					Title:       "First Leaderboard (Time)",
+					Color:       0xff4d01,
 					Description: description,
 				},
 			},
@@ -177,17 +195,18 @@ func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate)
 			log.Println("Error getting message time", err)
 			return
 		}
-		curTime = curTime.In(location)
+		curTime = curTime.In(curLocation)
 		ctx := context.Background()
 		dbRef.Child(curTime.Format(time.DateOnly)).Transaction(ctx, func(value db.TransactionNode) (interface{}, error) {
 			var firstMsg firstMessage
 			value.Unmarshal(&firstMsg)
 			if firstMsg.MsgID == "" || firstMsg.Time > curTime.UnixMilli() {
 				return firstMessage{
-					Content: m.Content,
-					Time: curTime.UnixMilli(),
-					MsgID: m.ID,
-					UserID: m.Author.ID,
+					Content:  m.Content,
+					Time:     curTime.UnixMilli(),
+					MsgID:    m.ID,
+					UserID:   m.Author.ID,
+					TimeZone: curTimeZone,
 				}, nil
 			} else {
 				return firstMsg, nil
@@ -197,13 +216,13 @@ func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate)
 }
 
 func firstReadyHandler(s *discordgo.Session, r *discordgo.Ready) {
-	channel, err := s.Channel(channelID); 
-	if (err != nil) {
+	channel, err := s.Channel(channelID)
+	if err != nil {
 		log.Fatalln("Error getting channel", err)
 	}
 	channelCreatedTime, err = discordgo.SnowflakeTimestamp(channel.ID)
 	if err != nil {
 		log.Fatalln("Error getting channel created time", err)
 	}
-	channelCreatedTime = channelCreatedTime.In(location)
+	channelCreatedTime = channelCreatedTime.In(curLocation)
 }
