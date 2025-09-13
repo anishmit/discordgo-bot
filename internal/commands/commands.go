@@ -7,18 +7,7 @@ import (
 const devGuildID = "1219548619129225226"
 
 var devCommands = []*discordgo.ApplicationCommand{
-	{
-		Name:        "yt",
-		Description: "Play YouTube video",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "query",
-				Description: "Search query",
-				Required:    true,
-			},
-		},
-	},
+	
 }
 
 var globalCommands = []*discordgo.ApplicationCommand{
@@ -188,6 +177,40 @@ var globalCommands = []*discordgo.ApplicationCommand{
 						},
 					},
 				},
+			},
+		},
+	},
+	{
+		Name:        "youtube",
+		Description: "YouTube music player",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "play",
+				Description: "Search and play YouTube videos",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionString,
+						Name:        "query",
+						Description: "Search query",
+						Required:    true,
+					},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "next",
+				Description: "Skip to the next video in the queue",
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "queue",
+				Description: "View the current queue",
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "move",
+				Description: "Move the bot to your voice channel",
 			},
 		},
 	},
