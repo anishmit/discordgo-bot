@@ -6,9 +6,7 @@ import (
 
 const devGuildID = "1219548619129225226"
 
-var devCommands = []*discordgo.ApplicationCommand{
-	
-}
+var devCommands = []*discordgo.ApplicationCommand{}
 
 var globalCommands = []*discordgo.ApplicationCommand{
 	{
@@ -181,8 +179,8 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "youtube",
-		Description: "YouTube music player",
+		Name:        "yt",
+		Description: "Play YouTube videos in a voice channel",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
@@ -200,7 +198,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "next",
-				Description: "Skip to the next video in the queue",
+				Description: "Play the next video in the queue",
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,

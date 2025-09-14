@@ -1,42 +1,42 @@
 package handlers
 
 import (
-	"os/exec"
+	"encoding/json"
 	"fmt"
+	"github.com/bwmarrin/discordgo"
+	"github.com/jonas747/ogg"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"encoding/json"
-	"github.com/bwmarrin/discordgo"
+	"os/exec"
 	"strings"
-	"github.com/jonas747/ogg"
 	"sync"
 )
 
-const MAX_RESULTS = "25"
+const maxResults = "25"
 
-type SearchResult struct {
-	Title string
-	ID string
-	Duration string
+type searchResult struct {
+	title    string
+	id       string
+	duration string
 }
 
 type guildQueue struct {
-	queue []string
-	nowPlaying int
+	queue           []string
+	nowPlaying      int
 	voiceConnection *discordgo.VoiceConnection
-	stopChannel chan bool
-	mu sync.Mutex
+	stopChannel     chan bool
+	mu              sync.Mutex
 }
 
 var (
 	guildQueues = make(map[string]*guildQueue)
-	queueMutex sync.Mutex
+	queueMutex  sync.Mutex
 )
 
 func init() {
-	registerCommandHandler("youtube", youtubeCommandHandler)
+	registerCommandHandler("yt", youtubeCommandHandler)
 	registerComponentHandler("ytSelect", ytSelectHandler)
 }
 
@@ -49,8 +49,8 @@ func inVoiceChannel(s *discordgo.Session, guildID, userID string) (bool, string)
 	}
 }
 
-func search(query string) ([]SearchResult, error) {
-	URL1, err := url.Parse("https://www.googleapis.com/youtube/v3/search")
+func search(query string) ([]searchResult, error) {
+	url1, err := url.Parse("https://www.googleapis.com/youtube/v3/search")
 	if err != nil {
 		return nil, err
 	}
@@ -58,10 +58,10 @@ func search(query string) ([]SearchResult, error) {
 	parameters1.Add("key", os.Getenv("YOUTUBE_API_KEY"))
 	parameters1.Add("part", "snippet")
 	parameters1.Add("type", "video")
-	parameters1.Add("maxResults", MAX_RESULTS)
+	parameters1.Add("maxResults", maxResults)
 	parameters1.Add("q", query)
-	URL1.RawQuery = parameters1.Encode()
-	res1, err := http.Get(URL1.String())
+	url1.RawQuery = parameters1.Encode()
+	res1, err := http.Get(url1.String())
 
 	if err != nil {
 		return nil, err
@@ -70,21 +70,21 @@ func search(query string) ([]SearchResult, error) {
 	json.NewDecoder(res1.Body).Decode(&data1)
 	items1 := data1["items"].([]any)
 
-	URL2, err := url.Parse("https://www.googleapis.com/youtube/v3/videos")
+	url2, err := url.Parse("https://www.googleapis.com/youtube/v3/videos")
 	if err != nil {
 		return nil, err
 	}
 	parameters2 := url.Values{}
 	parameters2.Add("key", os.Getenv("YOUTUBE_API_KEY"))
 	parameters2.Add("part", "contentDetails")
-	parameters2.Add("maxResults", MAX_RESULTS)
+	parameters2.Add("maxResults", maxResults)
 	commaSeparatedIDs := ""
 	for _, item := range items1 {
 		commaSeparatedIDs += item.(map[string]any)["id"].(map[string]any)["videoId"].(string) + ","
 	}
 	parameters2.Add("id", commaSeparatedIDs)
-	URL2.RawQuery = parameters2.Encode()
-	res2, err := http.Get(URL2.String())
+	url2.RawQuery = parameters2.Encode()
+	res2, err := http.Get(url2.String())
 
 	if err != nil {
 		return nil, err
@@ -93,12 +93,12 @@ func search(query string) ([]SearchResult, error) {
 	json.NewDecoder(res2.Body).Decode(&data2)
 	items2 := data2["items"].([]any)
 
-	var results []SearchResult
+	var results []searchResult
 	for i, item1 := range items1 {
-		results = append(results, SearchResult{
-			Title: item1.(map[string]any)["snippet"].(map[string]any)["title"].(string),
-			ID: item1.(map[string]any)["id"].(map[string]any)["videoId"].(string),
-			Duration: strings.ToLower(strings.Replace(items2[i].(map[string]any)["contentDetails"].(map[string]any)["duration"].(string)[1:], "T", "", 1)),
+		results = append(results, searchResult{
+			title:    item1.(map[string]any)["snippet"].(map[string]any)["title"].(string),
+			id:       item1.(map[string]any)["id"].(map[string]any)["videoId"].(string),
+			duration: strings.ToLower(strings.Replace(items2[i].(map[string]any)["contentDetails"].(map[string]any)["duration"].(string)[1:], "T", "", 1)),
 		})
 	}
 	return results, nil
@@ -110,8 +110,8 @@ func getOrCreateQueue(guildID string) *guildQueue {
 
 	if _, ok := guildQueues[guildID]; !ok {
 		guildQueues[guildID] = &guildQueue{
-			queue: []string{},
-			nowPlaying: -1,
+			queue:       []string{},
+			nowPlaying:  -1,
 			stopChannel: make(chan bool, 1),
 		}
 	}
@@ -204,12 +204,12 @@ func playVideo(s *discordgo.Session, guildID string, channelID string, videoID s
 	}
 }
 
-func getVideoInfo(videoIDs []string) (map[string]SearchResult, error) {
+func getVideoInfo(videoIDs []string) (map[string]searchResult, error) {
 	if len(videoIDs) == 0 {
-		return map[string]SearchResult{}, nil
+		return map[string]searchResult{}, nil
 	}
 
-	URL, err := url.Parse("https://www.googleapis.com/youtube/v3/videos")
+	url1, err := url.Parse("https://www.googleapis.com/youtube/v3/videos")
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +217,8 @@ func getVideoInfo(videoIDs []string) (map[string]SearchResult, error) {
 	parameters.Add("key", os.Getenv("YOUTUBE_API_KEY"))
 	parameters.Add("part", "snippet,contentDetails")
 	parameters.Add("id", strings.Join(videoIDs, ","))
-	URL.RawQuery = parameters.Encode()
-	res, err := http.Get(URL.String())
+	url1.RawQuery = parameters.Encode()
+	res, err := http.Get(url1.String())
 
 	if err != nil {
 		return nil, err
@@ -227,14 +227,14 @@ func getVideoInfo(videoIDs []string) (map[string]SearchResult, error) {
 	json.NewDecoder(res.Body).Decode(&data)
 	items := data["items"].([]any)
 
-	results := make(map[string]SearchResult)
+	results := make(map[string]searchResult)
 	for _, item := range items {
 		itemMap := item.(map[string]any)
 		videoID := itemMap["id"].(string)
-		results[videoID] = SearchResult{
-			Title: itemMap["snippet"].(map[string]any)["title"].(string),
-			ID: videoID,
-			Duration: strings.ToLower(strings.Replace(itemMap["contentDetails"].(map[string]any)["duration"].(string)[1:], "T", "", 1)),
+		results[videoID] = searchResult{
+			title:    itemMap["snippet"].(map[string]any)["title"].(string),
+			id:       videoID,
+			duration: strings.ToLower(strings.Replace(itemMap["contentDetails"].(map[string]any)["duration"].(string)[1:], "T", "", 1)),
 		}
 	}
 	return results, nil
@@ -266,9 +266,9 @@ func youtubeCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 		var selectMenuOptions []discordgo.SelectMenuOption
 		for _, searchResult := range searchResults {
 			selectMenuOptions = append(selectMenuOptions, discordgo.SelectMenuOption{
-				Label: searchResult.Title[:min(100, len(searchResult.Title))],
-				Value: searchResult.ID,
-				Description: searchResult.Duration,
+				Label:       searchResult.title[:min(100, len(searchResult.title))],
+				Value:       searchResult.id,
+				Description: searchResult.duration,
 			})
 		}
 		placeholderText := fmt.Sprintf("Results for %s", searchQuery)
@@ -277,11 +277,11 @@ func youtubeCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 				discordgo.ActionsRow{
 					Components: []discordgo.MessageComponent{
 						discordgo.SelectMenu{
-							MenuType: discordgo.StringSelectMenu,
-							CustomID: "ytSelect",
+							MenuType:    discordgo.StringSelectMenu,
+							CustomID:    "ytSelect",
 							Placeholder: placeholderText[:min(150, len(placeholderText))],
-							MaxValues: len(selectMenuOptions),
-							Options: selectMenuOptions,
+							MaxValues:   len(selectMenuOptions),
+							Options:     selectMenuOptions,
 						},
 					},
 				},
@@ -348,7 +348,7 @@ func youtubeCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 		// Now playing
 		if queue.nowPlaying >= 0 && queue.nowPlaying < len(queue.queue) {
 			currentVideo := videoInfo[queue.queue[queue.nowPlaying]]
-			description = fmt.Sprintf("**Now playing:**\n%s (%s)\n", currentVideo.Title, currentVideo.Duration)
+			description = fmt.Sprintf("**Now playing:**\n%s (%s)\n", currentVideo.title, currentVideo.duration)
 		}
 
 		// Next up
@@ -356,7 +356,7 @@ func youtubeCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 			description += "\n**Next up:**\n"
 			for i := queue.nowPlaying + 1; i < len(queue.queue); i++ {
 				video := videoInfo[queue.queue[i]]
-				description += fmt.Sprintf("%d. %s (%s)\n", i-queue.nowPlaying, video.Title, video.Duration)
+				description += fmt.Sprintf("%d. %s (%s)\n", i-queue.nowPlaying, video.title, video.duration)
 			}
 		}
 
