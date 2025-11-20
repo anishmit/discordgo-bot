@@ -155,6 +155,12 @@ var globalCommands = []*discordgo.ApplicationCommand{
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "clear",
+				Description: "Clear Gemini history for the current channel",
+			},
+			
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "model",
 				Description: "Change model",
 				Options: []*discordgo.ApplicationCommandOption{
