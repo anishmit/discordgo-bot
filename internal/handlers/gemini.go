@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultModel = "gemini-2.5-flash"
+	defaultModel = "gemini-3-pro-preview"
 	maxContents = 50
 	systemInstruction = `You are a chatbot inside a Discord text channel. 
 You will receive messages in the following format:
@@ -102,6 +102,10 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		for _, user := range m.Mentions {
 			// User mentioned the bot
 			if user.ID == s.State.User.ID {
+				model, ok := modelSettings[m.ChannelID][m.Author.ID]
+				if !ok {
+					model = defaultModel
+				}
 				responseMessage, err := s.ChannelMessageSend(m.ChannelID, "-# Thinking")
 				if err != nil {
 					log.Println("Error sending message")
@@ -123,10 +127,6 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 						{GoogleSearch : &genai.GoogleSearch{}},
 					}
 				}
-				model, ok := modelSettings[m.ChannelID][m.Author.ID]
-				if !ok {
-					model = defaultModel
-				}
 				res, err := clients.GeminiClient.Models.GenerateContent(
 					ctx,
 					model,
@@ -140,7 +140,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
 					return
 				}
-				generationTimeText := fmt.Sprintf("-# %.1fs", generationTime)
+				generationTimeText := fmt.Sprintf("-# `⏱️%.1fs` `👤%s`", generationTime, model)
 				resText := ""
 				if len(res.Candidates) > 0 {
 					resText = res.Text()
@@ -229,9 +229,9 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 		groundingSettings[i.ChannelID][userID] = newGroundingSetting
 		var content string
 		if !newGroundingSetting {
-			content = "Grounding has been enabled."
+			content = "Enabled grounding"
 		} else {
-			content = "Grounding has been disabled."
+			content = "Disabled grounding"
 		}
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -249,8 +249,16 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Model has been changed to %s", newModelSetting),
+				Content: fmt.Sprintf("Changed model to `%s`", newModelSetting),
 				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+	} else if option.Name == "clear" {
+		contentHistory[i.ChannelID] = nil
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Cleared Gemini history for this channel",
 			},
 		})
 	}
