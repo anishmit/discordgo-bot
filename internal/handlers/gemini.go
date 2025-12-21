@@ -20,6 +20,7 @@ import (
 	"github.com/anishmit/discordgo-bot/internal/clients"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	"strings"
 )
 
 const (
@@ -230,6 +231,11 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 								Name: "response.png",
 								ContentType: "image/png",
 								Reader: bytes.NewReader(res), 
+							},
+							{
+								Name: "response.md",
+								ContentType: "text/markdown",
+								Reader: strings.NewReader(resText), 
 							},
 						},
 						ID: responseMessage.ID,
