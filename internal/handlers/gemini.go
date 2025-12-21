@@ -189,14 +189,12 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 										<meta name="viewport" content="width=device-width, initial-scale=1.0">
 									</head>
 									<body>
-										<div id="markdown" style="display: inline-block; padding: 0;">
-											%s
-										</div>
+										%s
 									</body>
 								</html>
 							`, htmlBuf.String())).Do(ctx)
 						}),
-						chromedp.Screenshot("#markdown", &res),
+						chromedp.Screenshot("body", &res),
 					); err != nil {
 						log.Println("chromedp errored", err)
 						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
@@ -205,11 +203,6 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					messageEdit := &discordgo.MessageEdit{
 						Content: &generationTimeText,
 						Files: []*discordgo.File{
-							{
-								Name: "response.md",
-								ContentType: "text/markdown",
-								Reader: strings.NewReader(resText),
-							},
 							{
 								Name: "response.png",
 								ContentType: "image/png",
