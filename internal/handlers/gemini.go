@@ -189,7 +189,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 										<meta name="viewport" content="width=device-width, initial-scale=1.0">
 									</head>
 									<body>
-										<div id="markdown">
+										<div id="markdown" style="display: inline-block; padding: 0;">
 											%s
 										</div>
 									</body>
