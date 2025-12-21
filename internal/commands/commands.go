@@ -150,13 +150,13 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "grounding",
-				Description: "Toggle Grounding with Google Search",
+				Name:        "search",
+				Description: "Toggle Google Search",
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "clear",
-				Description: "Clear Gemini history for the current channel",
+				Description: "Clear history for the current channel",
 			},
 			
 			{
@@ -173,6 +173,10 @@ var globalCommands = []*discordgo.ApplicationCommand{
 							{
 								Name:  "Gemini 3 Pro",
 								Value: "gemini-3-pro-preview",
+							},
+							{
+								Name:  "Gemini 3 Flash",
+								Value: "gemini-3-flash-preview",
 							},
 							{
 								Name:  "Gemini 2.5 Pro",
