@@ -18,6 +18,8 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 	"google.golang.org/genai"
 	"github.com/anishmit/discordgo-bot/internal/clients"
+	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 )
 
 const (
@@ -45,7 +47,15 @@ var searchSetting = map[string]map[string]bool{}
 var modelSetting = map[string]map[string]string{}
 var markdownSetting = map[string]map[string]bool{}
 var markdown = goldmark.New(
-	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithExtensions(
+		extension.GFM,
+		highlighting.NewHighlighting(
+			highlighting.WithStyle("monokai"),
+			highlighting.WithFormatOptions(
+				chromahtml.WithLineNumbers(true),
+			),
+		),
+	),
 	goldmark.WithParserOptions(
 		parser.WithAutoHeadingID(),
 	),
