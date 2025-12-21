@@ -297,7 +297,7 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 		newMarkdownSetting := !markdownSetting[i.ChannelID][userID]
 		markdownSetting[i.ChannelID][userID] = newMarkdownSetting
 		var content string
-		if !newMarkdownSetting {
+		if newMarkdownSetting {
 			content = "Enabled markdown rendering for every response"
 		} else {
 			content = "Disabled markdown rendering for every response"
