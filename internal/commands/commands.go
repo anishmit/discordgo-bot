@@ -158,7 +158,11 @@ var globalCommands = []*discordgo.ApplicationCommand{
 				Name:        "clear",
 				Description: "Clear history for the current channel",
 			},
-			
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "markdown",
+				Description: "Toggle markdown rendering for every response",
+			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "model",

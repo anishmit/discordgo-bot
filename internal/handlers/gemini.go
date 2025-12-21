@@ -43,6 +43,7 @@ This is how you must behave:
 var history = map[string][]*genai.Content{}
 var searchSetting = map[string]map[string]bool{}
 var modelSetting = map[string]map[string]string{}
+var markdownSetting = map[string]map[string]bool{}
 var markdown = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
 	goldmark.WithParserOptions(
@@ -160,7 +161,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					history[m.ChannelID] = append(history[m.ChannelID], genai.NewContentFromText(resText, genai.RoleModel))[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
 				}
 				combinedText :=  generationTimeText + "\n" + resText
-				if len(combinedText) <= 0 {
+				if len(combinedText) <= 2000 && !markdownSetting[m.ChannelID][m.Author.ID] {
 					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, combinedText)
 				} else {
 					var htmlBuf bytes.Buffer
@@ -259,6 +260,25 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Content: fmt.Sprintf("Changed model to `%s`", newModelSetting),
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+	case "markdown":
+		if _, ok := markdownSetting[i.ChannelID]; !ok {
+			markdownSetting[i.ChannelID] = make(map[string]bool)
+		}
+		newMarkdownSetting := !markdownSetting[i.ChannelID][userID]
+		markdownSetting[i.ChannelID][userID] = newMarkdownSetting
+		var content string
+		if !newMarkdownSetting {
+			content = "Enabled markdown rendering for every response"
+		} else {
+			content = "Disabled markdown rendering for every response"
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: content,
 				Flags: discordgo.MessageFlagsEphemeral,
 			},
 		})
