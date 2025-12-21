@@ -194,7 +194,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 								</html>
 							`, htmlBuf.String())).Do(ctx)
 						}),
-						chromedp.FullScreenshot(&res, 100),
+						chromedp.Screenshot("body", &res),
 					); err != nil {
 						log.Println("chromedp errored", err)
 						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
