@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	defaultModel = "gemini-3-pro-preview"
+	defaultModel = "gemini-3-flash-preview"
 	maxContents = 50
 	systemInstruction = `You are a chatbot inside a Discord text channel. 
 You will receive messages in the following format:
