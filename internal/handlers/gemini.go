@@ -186,15 +186,16 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 									<head>
 										<meta charset="UTF-8">
 										<meta name="viewport" content="width=device-width, initial-scale=1.0">
-										<style>body { margin: 0; padding: 0; display: inline-block; }</style>
 									</head>
 									<body>
-										%s
+										<div id="markdown" style="display: inline-block; padding: 1px;">
+											%s
+										</div>
 									</body>
 								</html>
 							`, htmlBuf.String())).Do(ctx)
 						}),
-						chromedp.Screenshot("body", &res),
+						chromedp.Screenshot("#markdown", &res),
 					); err != nil {
 						log.Println("chromedp errored", err)
 						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
