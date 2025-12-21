@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"mime"
 	"time"
 	"github.com/bwmarrin/discordgo"
