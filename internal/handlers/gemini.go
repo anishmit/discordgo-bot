@@ -47,6 +47,7 @@ var history = map[string][]*genai.Content{}
 var searchSetting = map[string]map[string]bool{}
 var modelSetting = map[string]map[string]string{}
 var markdownSetting = map[string]map[string]bool{}
+var codeExecutionSetting = map[string]map[string]bool{}
 var markdown = goldmark.New(
 	goldmark.WithExtensions(
 		extension.GFM,
@@ -147,11 +148,13 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
 				}
 				config.Tools = []*genai.Tool{
-					{CodeExecution: &genai.ToolCodeExecution{}},
 					{URLContext: &genai.URLContext{}},
 				}
 				if !searchSetting[m.ChannelID][m.Author.ID] {
 					config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+				}
+				if codeExecutionSetting[m.ChannelID][m.Author.ID] {
+					config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
 				}
 				res, err := clients.GeminiClient.Models.GenerateContent(
 					ctx,
@@ -301,6 +304,25 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 			content = "Enabled markdown rendering for every response"
 		} else {
 			content = "Disabled markdown rendering for every response"
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: content,
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+	case "code":
+		if _, ok := codeExecutionSetting[i.ChannelID]; !ok {
+			codeExecutionSetting[i.ChannelID] = make(map[string]bool)
+		}
+		newCodeExecutionSetting := !codeExecutionSetting[i.ChannelID][userID]
+		codeExecutionSetting[i.ChannelID][userID] = newCodeExecutionSetting
+		var content string
+		if newCodeExecutionSetting {
+			content = "Enabled code execution"
+		} else {
+			content = "Disabled code execution"
 		}
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,

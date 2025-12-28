@@ -165,6 +165,11 @@ var globalCommands = []*discordgo.ApplicationCommand{
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "code",
+				Description: "Toggle code execution",
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "model",
 				Description: "Change model",
 				Options: []*discordgo.ApplicationCommandOption{
