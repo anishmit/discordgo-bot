@@ -130,7 +130,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if !ok {
 					model = defaultModel
 				}
-				responseMessage, err := s.ChannelMessageSend(m.ChannelID, "-# Thinking")
+				responseMessage, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s`", model))
 				if err != nil {
 					log.Println("Error sending message")
 					return
@@ -146,12 +146,18 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					},
 					SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
 				}
-				config.Tools = []*genai.Tool{
-					{URLContext: &genai.URLContext{}},
+				if model == "gemini-3-pro-image-preview" {
+					config.ImageConfig = &genai.ImageConfig{
+						AspectRatio: "16:9",
+						ImageSize: "1K",
+					}
 				}
+				config.Tools = []*genai.Tool{}
+				// Google search enabled by default 
 				if !searchSetting[m.ChannelID][m.Author.ID] {
 					config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 				}
+				// Code execution disabled by default
 				if codeExecutionSetting[m.ChannelID][m.Author.ID] {
 					config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
 				}
@@ -161,26 +167,40 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					history[m.ChannelID], 
 					config,
 				)
+				generationTime := time.Since(startTime).Seconds()
+				generationTimeText := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", generationTime, model)
 				if err != nil {
 					log.Println("Error generating content", err)
-					history[m.ChannelID] = nil
-					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, err.Error())
+					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, generationTimeText + "\n" + err.Error())
 					return
 				}
-				generationTime := time.Since(startTime).Seconds()
-				generationTimeText := fmt.Sprintf("-# `⏱️%.1fs` `👤%s`", generationTime, model)
+				history[m.ChannelID] = append(history[m.ChannelID], res.Candidates[0].Content)[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
 				resText := res.Text()
-				if len(resText) > 0 {
-					history[m.ChannelID] = append(history[m.ChannelID], genai.NewContentFromText(resText, genai.RoleModel))[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
-				}
 				combinedText :=  generationTimeText + "\n" + resText
+				files := []*discordgo.File{}
+				for _, part := range res.Candidates[0].Content.Parts {
+					if part.InlineData != nil {
+						extensions, err := mime.ExtensionsByType(part.InlineData.MIMEType)
+						var extension string
+						if err == nil && len(extensions) > 0 {
+							extension = extensions[0]
+						}
+						files = append(files, &discordgo.File{Name: "file" + extension, ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
+					}
+				}
 				if len(combinedText) <= 2000 && !markdownSetting[m.ChannelID][m.Author.ID] {
-					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, combinedText)
+					messageEdit := &discordgo.MessageEdit{
+						Content: &combinedText,
+						Files: files,
+						ID: responseMessage.ID,
+						Channel: m.ChannelID,
+					}
+					s.ChannelMessageEditComplex(messageEdit)
 				} else {
 					var htmlBuf bytes.Buffer
 					if err := markdown.Convert([]byte(resText), &htmlBuf); err != nil {
 						log.Println("goldmark errored", err)
-						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
+						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, generationTimeText + "\n" + err.Error())
 						return
 					}
 					ctx, cancel := chromedp.NewContext(context.Background())
@@ -223,23 +243,16 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 						chromedp.Screenshot("#markdown", &res),
 					); err != nil {
 						log.Println("chromedp errored", err)
-						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, fmt.Sprintf("-# %s", err.Error()))
+						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, generationTimeText + "\n" + err.Error())
 						return
 					}
+					files = append(files, 
+						&discordgo.File{Name: "response.png", ContentType: "image/png", Reader: bytes.NewReader(res)}, 
+						&discordgo.File{Name: "response.md", ContentType: "text/markdown", Reader: strings.NewReader(resText)},
+					)
 					messageEdit := &discordgo.MessageEdit{
 						Content: &generationTimeText,
-						Files: []*discordgo.File{
-							{
-								Name: "response.png",
-								ContentType: "image/png",
-								Reader: bytes.NewReader(res), 
-							},
-							{
-								Name: "response.md",
-								ContentType: "text/markdown",
-								Reader: strings.NewReader(resText), 
-							},
-						},
+						Files: files,
 						ID: responseMessage.ID,
 						Channel: m.ChannelID,
 					}

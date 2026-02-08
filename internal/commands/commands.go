@@ -26,68 +26,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "imagen",
-		Description: "Generate an image with Imagen",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "prompt",
-				Description: "Prompt used for generated image",
-				Required:    true,
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "aspect_ratio",
-				Description: "Aspect ratio used for generated image",
-				Choices: []*discordgo.ApplicationCommandOptionChoice{
-					{
-						Name:  "1:1",
-						Value: "1:1",
-					},
-					{
-						Name:  "9:16",
-						Value: "9:16",
-					},
-					{
-						Name:  "16:9",
-						Value: "16:9",
-					},
-					{
-						Name:  "3:4",
-						Value: "3:4",
-					},
-					{
-						Name:  "4:3",
-						Value: "4:3",
-					},
-				},
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "model",
-				Description: "Model used to generate image",
-				Choices: []*discordgo.ApplicationCommandOptionChoice{
-					{
-						Name:  "Imagen 4",
-						Value: "imagen-4.0-generate-001",
-					},
-					{
-						Name:  "Imagen 4 Ultra",
-						Value: "imagen-4.0-ultra-generate-001",
-					},
-					{
-						Name:  "Imagen 4 Fast Generate",
-						Value: "imagen-4.0-fast-generate-001",
-					},
-					{
-						Name:  "Imagen 3",
-						Value: "imagen-3.0-generate-002",
-					},
-				},
-			},
-		},
-	},
-	{
 		Name:        "send",
 		Description: "Schedule sending a message at a Unix epoch time in milliseconds",
 		Options: []*discordgo.ApplicationCommandOption{
@@ -182,6 +120,10 @@ var globalCommands = []*discordgo.ApplicationCommand{
 							{
 								Name:  "Gemini 3 Pro",
 								Value: "gemini-3-pro-preview",
+							},
+							{
+								Name:  "Gemini 3 Pro Image Preview",
+								Value: "gemini-3-pro-image-preview",
 							},
 							{
 								Name:  "Gemini 3 Flash",
