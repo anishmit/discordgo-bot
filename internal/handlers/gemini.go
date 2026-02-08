@@ -180,12 +180,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				files := []*discordgo.File{}
 				for _, part := range res.Candidates[0].Content.Parts {
 					if part.InlineData != nil {
-						extensions, err := mime.ExtensionsByType(part.InlineData.MIMEType)
-						var extension string
-						if err == nil && len(extensions) > 0 {
-							extension = extensions[0]
-						}
-						files = append(files, &discordgo.File{Name: "file" + extension, ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
+						files = append(files, &discordgo.File{Name: "file.jpeg", ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
 					}
 				}
 				if len(combinedText) <= 2000 && !markdownSetting[m.ChannelID][m.Author.ID] {
