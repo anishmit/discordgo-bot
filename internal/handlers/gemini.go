@@ -174,15 +174,17 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, generationTimeText + "\n" + err.Error())
 					return
 				}
-				history[m.ChannelID] = append(history[m.ChannelID], res.Candidates[0].Content)[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
-				resText := res.Text()
-				combinedText :=  generationTimeText + "\n" + resText
 				files := []*discordgo.File{}
-				for _, part := range res.Candidates[0].Content.Parts {
+				if len(res.Candidates) > 0 {
+					history[m.ChannelID] = append(history[m.ChannelID], res.Candidates[0].Content)[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
+					for _, part := range res.Candidates[0].Content.Parts {
 					if part.InlineData != nil {
 						files = append(files, &discordgo.File{Name: "file.jpeg", ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
 					}
 				}
+				}
+				resText := res.Text()
+				combinedText :=  generationTimeText + "\n" + resText				
 				if len(combinedText) <= 2000 && !markdownSetting[m.ChannelID][m.Author.ID] {
 					messageEdit := &discordgo.MessageEdit{
 						Content: &combinedText,
