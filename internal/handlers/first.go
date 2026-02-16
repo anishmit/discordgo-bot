@@ -163,7 +163,7 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			return firstMessageSpeeds[i].speed < firstMessageSpeeds[j].speed
 		})
 		var description string
-		for i := range min(25, len(data)) {
+		for i := range min(27, len(data)) {
 			firstMessage := data[firstMessageSpeeds[i].date]
 			description += fmt.Sprintf(
 				"%d. <@%s>: **%d** ms on [%s](https://discord.com/channels/%s/%s/%s)\n",
