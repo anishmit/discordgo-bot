@@ -78,27 +78,21 @@ func convertToMp3(pcm []byte) ([]byte, error) {
 	}
 	cmd := exec.Command(
 		"ffmpeg",
-		"-hide_banner",
-		"-loglevel", "error",
 		"-f", "s16le",
 		"-ar", "24000",
 		"-ac", "1",
-		"-i", "pipe:0",
+		"-i", "-",
 		"-c:a", "libmp3lame",
 		"-b:a", "64k",
 		"-f", "mp3",
-		"pipe:1",
+		"-",
 	)
 	cmd.Stdin = bytes.NewReader(pcm)
-
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
-
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg execution failed: %v, stderr: %s", err, errBuf.String())
+		return nil, fmt.Errorf("ffmpeg failed: %v", err)
 	}
 
 	return outBuf.Bytes(), nil
