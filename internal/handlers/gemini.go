@@ -156,8 +156,9 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				}
 			}()
 		}
+		userContent := genai.NewContentFromParts(parts, genai.RoleUser)
 		// Add content to content history
-		history[m.ChannelID] = append(history[m.ChannelID], genai.NewContentFromParts(parts, genai.RoleUser))[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
+		history[m.ChannelID] = append(history[m.ChannelID], userContent)[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
 		for _, user := range m.Mentions {
 			// User mentioned the bot
 			if user.ID == s.State.User.ID {
@@ -190,12 +191,14 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if codeExecutionSetting[m.ChannelID][m.Author.ID] {
 					config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
 				}
+				contents := history[m.ChannelID]
 				if model == "gemini-3-pro-image-preview" {
 					config.ImageConfig = &genai.ImageConfig{
 						AspectRatio: "16:9",
 						ImageSize: "1K",
 					}
 				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
+					contents = []*genai.Content{userContent}
 					config.Tools = []*genai.Tool{}
 					config.ResponseModalities = []string{"AUDIO"}
 					config.SpeechConfig = &genai.SpeechConfig{
@@ -209,7 +212,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				res, err := clients.GeminiClient.Models.GenerateContent(
 					ctx,
 					model,
-					history[m.ChannelID], 
+					contents, 
 					config,
 				)
 				generationTime := time.Since(startTime).Seconds()
