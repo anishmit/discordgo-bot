@@ -72,37 +72,35 @@ func init() {
 	registerCommandHandler("gemini", geminiCommandHandler)
 }
 
-func convertToOpusOgg(wavData []byte) ([]byte, error) {
-	// 1. Prepare the FFmpeg command
-	cmd := exec.Command("ffmpeg",
-		"-hide_banner",     // Suppress unnecessary startup info
-		"-loglevel", "error", // Only output errors to stderr to prevent buffer bloat
-		"-i", "pipe:0",     // Read from standard input
-		"-c:a", "libopus",  // Use the Opus audio codec
-		"-b:a", "32k",      // Set audio bitrate to 32 kbps
-		"-ac", "1",         // Set audio channels to 1 (mono)
-		"-ar", "48000",     // Set sample rate to 48000 Hz
-		"-f", "ogg",        // Force output container format to OGG
-		"pipe:1",           // Write output to standard output
+func convertToMp3(pcm []byte) ([]byte, error) {
+	if len(pcm) == 0 {
+		return nil, fmt.Errorf("pcm is 0 bytes")
+	}
+	cmd := exec.Command(
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-f", "s16le",
+		"-ar", "24000",
+		"-ac", "1",
+		"-i", "pipe:0",
+		"-c:a", "libmp3lame",
+		"-b:a", "64k",
+		"-f", "mp3",
+		"pipe:1",
 	)
+	cmd.Stdin = bytes.NewReader(pcm)
 
-	// 2. Connect the input WAV byte array to FFmpeg's standard input
-	cmd.Stdin = bytes.NewReader(wavData)
-
-	// 3. Create a buffer and connect it to FFmpeg's standard output
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 
-	// 4. Create a buffer for standard error to capture actionable failure logs
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 
-	// 5. Execute the command and wait for it to complete
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ffmpeg execution failed: %v, stderr: %s", err, errBuf.String())
 	}
 
-	// 6. Return the resulting OGG Opus byte array
 	return outBuf.Bytes(), nil
 }
 
@@ -199,7 +197,6 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					}
 				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
 					contents = []*genai.Content{userContent}
-					config.SafetySettings = nil
 					config.SystemInstruction = nil
 					config.Tools = []*genai.Tool{}
 					config.ResponseModalities = []string{"AUDIO"}
@@ -233,22 +230,22 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 							if model == "gemini-3-pro-image-preview" {
 								files = append(files, &discordgo.File{Name: "file.jpeg", ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
 							} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
-								opusBytes, err := convertToOpusOgg(part.InlineData.Data)
-								if err != nil {
+								mp3Bytes, err := convertToMp3(part.InlineData.Data)
+								if err == nil {
 									s.ChannelMessageSendComplex(
 										m.ChannelID,
 										&discordgo.MessageSend{
 											Files: []*discordgo.File{
 												{
-													Name: "voice-message.ogg",
-													ContentType: "audio/ogg",
-													Reader: bytes.NewReader(opusBytes),
+													Name: "tts.mp3",
+													ContentType: "audio/mpeg",
+													Reader: bytes.NewReader(mp3Bytes),
 												},
 											},
 										},
 									)
 								} else {
-									log.Println("Error converting to Opus", err)
+									log.Println("Error converting to MP3", err)
 								}
 							}
 						} else if part.Text != "" {
