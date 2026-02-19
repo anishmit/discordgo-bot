@@ -226,18 +226,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 							} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
 								mp3Bytes, err := convertToMp3(part.InlineData.Data)
 								if err == nil {
-									s.ChannelMessageSendComplex(
-										m.ChannelID,
-										&discordgo.MessageSend{
-											Files: []*discordgo.File{
-												{
-													Name: "tts.mp3",
-													ContentType: "audio/mpeg",
-													Reader: bytes.NewReader(mp3Bytes),
-												},
-											},
-										},
-									)
+									files = append(files, &discordgo.File{Name: "tts.mp3", ContentType: "audio/mpeg", Reader: bytes.NewReader(mp3Bytes)})
 								} else {
 									log.Println("Error converting to MP3", err)
 								}
