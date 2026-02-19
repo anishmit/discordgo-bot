@@ -199,6 +199,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					}
 				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
 					contents = []*genai.Content{userContent}
+					config.SafetySettings = nil
 					config.SystemInstruction = nil
 					config.Tools = []*genai.Tool{}
 					config.ResponseModalities = []string{"AUDIO"}
