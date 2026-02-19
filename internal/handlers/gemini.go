@@ -21,6 +21,7 @@ import (
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"strings"
+	"os/exec"
 )
 
 const (
@@ -69,6 +70,40 @@ var markdown = goldmark.New(
 func init() {
 	registerMessageCreateHandler(geminiMsgCreateHandler)
 	registerCommandHandler("gemini", geminiCommandHandler)
+}
+
+func convertToOpusOgg(wavData []byte) ([]byte, error) {
+	// 1. Prepare the FFmpeg command
+	cmd := exec.Command("ffmpeg",
+		"-hide_banner",     // Suppress unnecessary startup info
+		"-loglevel", "error", // Only output errors to stderr to prevent buffer bloat
+		"-i", "pipe:0",     // Read from standard input
+		"-c:a", "libopus",  // Use the Opus audio codec
+		"-b:a", "32k",      // Set audio bitrate to 32 kbps
+		"-ac", "1",         // Set audio channels to 1 (mono)
+		"-ar", "48000",     // Set sample rate to 48000 Hz
+		"-f", "ogg",        // Force output container format to OGG
+		"pipe:1",           // Write output to standard output
+	)
+
+	// 2. Connect the input WAV byte array to FFmpeg's standard input
+	cmd.Stdin = bytes.NewReader(wavData)
+
+	// 3. Create a buffer and connect it to FFmpeg's standard output
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+
+	// 4. Create a buffer for standard error to capture actionable failure logs
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+
+	// 5. Execute the command and wait for it to complete
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg execution failed: %v, stderr: %s", err, errBuf.String())
+	}
+
+	// 6. Return the resulting OGG Opus byte array
+	return outBuf.Bytes(), nil
 }
 
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -151,6 +186,15 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 						AspectRatio: "16:9",
 						ImageSize: "1K",
 					}
+				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
+					config.ResponseModalities = []string{"AUDIO"}
+					config.SpeechConfig = &genai.SpeechConfig{
+						VoiceConfig: &genai.VoiceConfig{
+							PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
+								VoiceName: "Leda",
+							},
+						},
+					}
 				}
 				config.Tools = []*genai.Tool{}
 				// Google search enabled by default 
@@ -175,15 +219,37 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					return
 				}
 				files := []*discordgo.File{}
+				var resText string
 				if len(res.Candidates) > 0 {
 					history[m.ChannelID] = append(history[m.ChannelID], res.Candidates[0].Content)[max(0, len(history[m.ChannelID]) + 1 - maxContents):]
 					for _, part := range res.Candidates[0].Content.Parts {
-					if part.InlineData != nil {
-						files = append(files, &discordgo.File{Name: "file.jpeg", ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
+						if part.InlineData != nil {
+							if model == "gemini-3-pro-image-preview" {
+								files = append(files, &discordgo.File{Name: "file.jpeg", ContentType: part.InlineData.MIMEType, Reader: bytes.NewReader(part.InlineData.Data)})
+							} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
+								opusBytes, err := convertToOpusOgg(part.InlineData.Data)
+								if err != nil {
+									s.ChannelMessageSendComplex(
+										m.ChannelID,
+										&discordgo.MessageSend{
+											Files: []*discordgo.File{
+												{
+													Name: "voice-message.ogg",
+													ContentType: "audio/ogg",
+													Reader: bytes.NewReader(opusBytes),
+												},
+											},
+										},
+									)
+								} else {
+									log.Println("Error converting to Opus", err)
+								}
+							}
+						} else if part.Text != "" {
+							resText += part.Text
+						}
 					}
 				}
-				}
-				resText := res.Text()
 				combinedText :=  generationTimeText + "\n" + resText				
 				if len(combinedText) <= 2000 && !markdownSetting[m.ChannelID][m.Author.ID] {
 					messageEdit := &discordgo.MessageEdit{

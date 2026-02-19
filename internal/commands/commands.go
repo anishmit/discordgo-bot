@@ -137,6 +137,14 @@ var globalCommands = []*discordgo.ApplicationCommand{
 								Name:  "Gemini 2.5 Flash",
 								Value: "gemini-2.5-flash",
 							},
+							{
+								Name: "Gemini 2.5 Pro TTS",
+								Value: "gemini-2.5-pro-preview-tts",
+							},
+							{
+								Name: "Gemini 2.5 Flash TTS",
+								Value: "gemini-2.5-flash-preview-tts",
+							},
 						},
 					},
 				},
