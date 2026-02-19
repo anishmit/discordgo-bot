@@ -181,21 +181,6 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					},
 					SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
 				}
-				if model == "gemini-3-pro-image-preview" {
-					config.ImageConfig = &genai.ImageConfig{
-						AspectRatio: "16:9",
-						ImageSize: "1K",
-					}
-				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
-					config.ResponseModalities = []string{"AUDIO"}
-					config.SpeechConfig = &genai.SpeechConfig{
-						VoiceConfig: &genai.VoiceConfig{
-							PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
-								VoiceName: "Leda",
-							},
-						},
-					}
-				}
 				config.Tools = []*genai.Tool{}
 				// Google search enabled by default 
 				if !searchSetting[m.ChannelID][m.Author.ID] {
@@ -204,6 +189,22 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 				// Code execution disabled by default
 				if codeExecutionSetting[m.ChannelID][m.Author.ID] {
 					config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
+				}
+				if model == "gemini-3-pro-image-preview" {
+					config.ImageConfig = &genai.ImageConfig{
+						AspectRatio: "16:9",
+						ImageSize: "1K",
+					}
+				} else if model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts" {
+					config.Tools = []*genai.Tool{}
+					config.ResponseModalities = []string{"AUDIO"}
+					config.SpeechConfig = &genai.SpeechConfig{
+						VoiceConfig: &genai.VoiceConfig{
+							PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
+								VoiceName: "Leda",
+							},
+						},
+					}
 				}
 				res, err := clients.GeminiClient.Models.GenerateContent(
 					ctx,
