@@ -176,7 +176,7 @@ func fetchAttachment(att *discordgo.MessageAttachment) (*genai.Part, error) {
 
 func convertToMp3(pcm []byte) ([]byte, error) {
 	if len(pcm) == 0 {
-		return nil, fmt.Errorf("pcm is 0 bytes")
+		return []byte{}, nil
 	}
 	cmd := exec.Command("ffmpeg",
 		"-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "-",
@@ -186,7 +186,7 @@ func convertToMp3(pcm []byte) ([]byte, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg failed: %w", err)
+		return nil, err
 	}
 	return out.Bytes(), nil
 }
@@ -251,7 +251,7 @@ func isTTSModel(model string) bool {
 func extractResponse(res *genai.GenerateContentResponse, model string) (string, []*discordgo.File) {
 	var text string
 	var files []*discordgo.File
-	if len(res.Candidates) == 0 {
+	if len(res.Candidates) == 0 || res.Candidates[0].Content == nil {
 		return "", nil
 	}
 	for _, part := range res.Candidates[0].Content.Parts {
@@ -264,7 +264,7 @@ func extractResponse(res *genai.GenerateContentResponse, model string) (string, 
 				})
 			case isTTSModel(model):
 				if mp3, err := convertToMp3(part.InlineData.Data); err != nil {
-					log.Println("Error converting to MP3:", err)
+					log.Println("Error converting to MP3", err)
 				} else {
 					files = append(files, &discordgo.File{
 						Name: "tts.mp3", ContentType: "audio/mpeg",
@@ -283,7 +283,7 @@ func extractResponse(res *genai.GenerateContentResponse, model string) (string, 
 func renderMarkdownScreenshot(mdText string) ([]byte, error) {
 	var htmlBuf bytes.Buffer
 	if err := md.Convert([]byte(mdText), &htmlBuf); err != nil {
-		return nil, fmt.Errorf("goldmark: %w", err)
+		return nil, err
 	}
 
 	ctx, cancel := chromedp.NewContext(context.Background())
@@ -306,17 +306,17 @@ func renderMarkdownScreenshot(mdText string) ([]byte, error) {
 		}),
 		chromedp.Screenshot("#markdown", &png),
 	); err != nil {
-		return nil, fmt.Errorf("chromedp: %w", err)
+		return nil, err
 	}
 	return png, nil
 }
 
 // sendResponse edits the placeholder message with the final content.
-func sendResponse(s *discordgo.Session, channelID, messageID, timerText, resText string, files []*discordgo.File, forceMarkdown bool) {
+func sendResponse(s *discordgo.Session, channelID, messageID, timerText, resText string, resFiles []*discordgo.File, forceMarkdown bool) {
 	combined := timerText + "\n" + resText
 	if len(combined) <= 2000 && !forceMarkdown {
 		s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Content: &combined, Files: files,
+			Content: &combined, Files: resFiles,
 			ID: messageID, Channel: channelID,
 		})
 		return
@@ -324,17 +324,18 @@ func sendResponse(s *discordgo.Session, channelID, messageID, timerText, resText
 
 	png, err := renderMarkdownScreenshot(resText)
 	if err != nil {
-		log.Println("Markdown render error:", err)
-		s.ChannelMessageEdit(channelID, messageID, timerText+"\n"+err.Error())
+		log.Println("Markdown render error", err)
+		s.ChannelMessageEdit(channelID, messageID, timerText + "\n" + err.Error())
 		return
 	}
-	files = append(files,
-		&discordgo.File{Name: "response.png", ContentType: "image/png", Reader: bytes.NewReader(png)},
-		&discordgo.File{Name: "response.md", ContentType: "text/markdown", Reader: strings.NewReader(resText)},
-	)
 	s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-		Content: &timerText, Files: files,
-		ID: messageID, Channel: channelID,
+		Content: &timerText, 
+		Files: append(resFiles,
+			&discordgo.File{Name: "response.png", ContentType: "image/png", Reader: bytes.NewReader(png)},
+			&discordgo.File{Name: "response.md", ContentType: "text/markdown", Reader: strings.NewReader(resText)},
+		),
+		ID: messageID, 
+		Channel: channelID,
 	})
 }
 
@@ -377,8 +378,8 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			elapsed := time.Since(startTime).Seconds()
 			timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
 			if err != nil {
-				log.Println("Error resolving contents:", err)
-				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer+"\n"+err.Error())
+				log.Println("Error resolving contents", err)
+				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer + "\n" + err.Error())
 			} else {
 				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer)
 			}
@@ -391,17 +392,17 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
 
 		if err != nil {
-			log.Println("Error generating content:", err)
-			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer+"\n"+err.Error())
+			log.Println("Error generating content", err)
+			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer + "\n" + err.Error())
 			return
 		}
 
-		resText, files := extractResponse(res, model)
-		if len(res.Candidates) > 0 {
+		resText, resFiles := extractResponse(res, model)
+		if len(res.Candidates) > 0 && res.Candidates[0].Content != nil {
 			appendHistory(m.ChannelID, res.Candidates[0].Content)
 		}
 
-		sendResponse(s, m.ChannelID, responseMsg.ID, timer, resText, files, userSettings.markdownForced)
+		sendResponse(s, m.ChannelID, responseMsg.ID, timer, resText, resFiles, userSettings.markdownForced)
 		break
 	}
 }
