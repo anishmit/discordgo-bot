@@ -108,17 +108,9 @@ func getUserSettings(channelID, userID string) *userSettings {
 		settings[channelID] = make(map[string]*userSettings)
 	}
 	if settings[channelID][userID] == nil {
-		settings[channelID][userID] = &userSettings{}
+		settings[channelID][userID] = &userSettings{model: defaultModel}
 	}
 	return settings[channelID][userID]
-}
-
-func getModel(channelID, userID string) string {
-	s := getUserSettings(channelID, userID)
-	if s.model != "" {
-		return s.model
-	}
-	return defaultModel
 }
 
 // appendHistory adds content and trims to maxContents.
@@ -364,7 +356,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		us := getUserSettings(m.ChannelID, m.Author.ID)
-		model := getModel(m.ChannelID, m.Author.ID)
+		model := us.model
 
 		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s`", model))
 		if err != nil {
