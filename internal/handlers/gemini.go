@@ -194,10 +194,19 @@ func convertToMp3(pcm []byte) ([]byte, error) {
 // buildConfig creates the generation config for a given model and user settings.
 func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{
-		SafetySettings:    safetySetting,
-		SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
-		Tools:             []*genai.Tool{},
+		SafetySettings: safetySetting,
+		Tools:          []*genai.Tool{},
 	}
+	if isTTSModel(userSettings.model) {
+		config.ResponseModalities = []string{"AUDIO"}
+		config.SpeechConfig = &genai.SpeechConfig{
+			VoiceConfig: &genai.VoiceConfig{
+				PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{VoiceName: "Leda"},
+			},
+		}
+		return config
+	}
+	config.SystemInstruction = genai.NewContentFromText(systemInstruction, genai.RoleUser)
 	if !userSettings.searchDisabled {
 		config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 	}
@@ -224,17 +233,9 @@ func handleTTS(ctx context.Context, model string, contents []*genai.Content, con
 	transcript := transcriptRes.Text()
 	log.Println("Transcript", transcript)
 	if len(transcript) == 0 {
-		return nil, nil // empty transcript, nothing to say
+		return nil, nil
 	}
 
-	config.SystemInstruction = nil
-	config.Tools = []*genai.Tool{}
-	config.ResponseModalities = []string{"AUDIO"}
-	config.SpeechConfig = &genai.SpeechConfig{
-		VoiceConfig: &genai.VoiceConfig{
-			PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{VoiceName: "Leda"},
-		},
-	}
 	ttsContents := []*genai.Content{genai.NewContentFromText(transcript, genai.RoleUser)}
 	return clients.GeminiClient.Models.GenerateContent(ctx, model, ttsContents, config)
 }
