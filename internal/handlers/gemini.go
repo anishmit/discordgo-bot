@@ -219,8 +219,13 @@ func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	return config
 }
 
-// handleTTS generates a transcript then converts it to audio.
-func handleTTS(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+// resolveContents returns the contents to pass to GenerateContent.
+// For TTS models, it generates a transcript first and returns that as the contents.
+// For all other models, it returns the history as-is.
+func resolveContents(ctx context.Context, model string, contents []*genai.Content) ([]*genai.Content, error) {
+	if !isTTSModel(model) {
+		return contents, nil
+	}
 	transcriptConfig := &genai.GenerateContentConfig{
 		SafetySettings:    safetySettings,
 		SystemInstruction: genai.NewContentFromText(ttsSystemInstruction, genai.RoleUser),
@@ -235,9 +240,7 @@ func handleTTS(ctx context.Context, model string, contents []*genai.Content, con
 	if len(transcript) == 0 {
 		return nil, nil
 	}
-
-	ttsContents := []*genai.Content{genai.NewContentFromText(transcript, genai.RoleUser)}
-	return clients.GeminiClient.Models.GenerateContent(ctx, model, ttsContents, config)
+	return []*genai.Content{genai.NewContentFromText(transcript, genai.RoleUser)}, nil
 }
 
 func isTTSModel(model string) bool {
@@ -368,25 +371,21 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		ctx := context.Background()
 		startTime := time.Now()
 		config := buildConfig(userSettings)
-		contents := history[m.ChannelID]
 
-		var res *genai.GenerateContentResponse
-		if isTTSModel(model) {
-			res, err = handleTTS(ctx, model, contents, config)
-			if err != nil || res == nil {
-				elapsed := time.Since(startTime).Seconds()
-				timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
-				if err != nil {
-					log.Println("TTS error:", err)
-					s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer+"\n"+err.Error())
-				} else {
-					s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer)
-				}
-				return
+		contents, err := resolveContents(ctx, model, history[m.ChannelID])
+		if err != nil || contents == nil {
+			elapsed := time.Since(startTime).Seconds()
+			timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
+			if err != nil {
+				log.Println("Error resolving contents:", err)
+				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer+"\n"+err.Error())
+			} else {
+				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer)
 			}
-		} else {
-			res, err = clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
+			return
 		}
+
+		res, err := clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
 
 		elapsed := time.Since(startTime).Seconds()
 		timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
