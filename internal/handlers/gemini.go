@@ -108,7 +108,7 @@ func getUserSettings(channelID, userID string) *userSettings {
 		settings[channelID] = make(map[string]*userSettings)
 	}
 	if settings[channelID][userID] == nil {
-		settings[channelID][userID] = &userSettings{model: defaultModel}
+		settings[channelID][userID] = &userSettings{model: defaultModel, thinkingLevel: genai.ThinkingLevelHigh}
 	}
 	return settings[channelID][userID]
 }
@@ -216,6 +216,7 @@ func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	if isImageModel(userSettings.model) {
 		config.ImageConfig = &genai.ImageConfig{AspectRatio: "16:9", ImageSize: "1K"}
 	}
+	// TODO: apply userSettings.thinkingLevel for Gemini 3 models
 	return config
 }
 
@@ -249,6 +250,10 @@ func isTTSModel(model string) bool {
 
 func isImageModel(model string) bool {
 	return model == "gemini-3-pro-image-preview"
+}
+
+func isGemini3Model(model string) bool {
+	return strings.HasPrefix(model, "gemini-3-")
 }
 
 func formatTimer(startTime time.Time, model string) string {
