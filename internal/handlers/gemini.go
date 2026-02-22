@@ -261,7 +261,7 @@ func isGemini3Model(model string) bool {
 }
 
 func formatTimer(startTime time.Time, userSettings *userSettings) string {
-	return fmt.Sprintf("-# `⌛%.1fs` `👤%s` `💭%s`", time.Since(startTime).Seconds(), userSettings.model, strings.ToLower(string(userSettings.thinkingLevel)))
+	return fmt.Sprintf("-# `⌛%.1fs` `👤%s` `🧠%s`", time.Since(startTime).Seconds(), userSettings.model, strings.ToLower(string(userSettings.thinkingLevel)))
 }
 
 func hasContent(res *genai.GenerateContentResponse) bool {
@@ -384,7 +384,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		userSettings := getUserSettings(m.ChannelID, m.Author.ID)
 		model := userSettings.model
 
-		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s` `💭%s`", model, strings.ToLower(string(userSettings.thinkingLevel))))
+		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s` `🧠%s`", model, strings.ToLower(string(userSettings.thinkingLevel))))
 		if err != nil {
 			log.Println("Error sending message", err)
 			return
