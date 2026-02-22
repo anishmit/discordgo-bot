@@ -227,6 +227,13 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 					}
 					transcript := transcriptRes.Text()
 					log.Println("Transcript", transcript)
+					if len(transcript) == 0 {
+						log.Println("Transcript is empty")
+						generationTime := time.Since(startTime).Seconds()
+						generationTimeText := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", generationTime, model)
+						s.ChannelMessageEdit(m.ChannelID, responseMessage.ID, generationTimeText)
+						return
+					}
 					contents = []*genai.Content{genai.NewContentFromText(transcript, genai.RoleUser)}
 					config.SystemInstruction = nil
 					config.Tools = []*genai.Tool{}
