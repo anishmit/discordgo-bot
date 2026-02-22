@@ -149,6 +149,29 @@ var globalCommands = []*discordgo.ApplicationCommand{
 					},
 				},
 			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "thinking",
+				Description: "Change thinking level (for Gemini 3 models)",
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Type:        discordgo.ApplicationCommandOptionString,
+						Name:        "name",
+						Description: "Model name",
+						Required:    true,
+						Choices: []*discordgo.ApplicationCommandOptionChoice{
+							{
+								Name:  "Low",
+								Value: "LOW",
+							},
+							{
+								Name:  "High",
+								Value: "HIGH",
+							},
+						},
+					},
+				},
+			},
 		},
 	},
 	{

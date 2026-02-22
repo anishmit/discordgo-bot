@@ -70,6 +70,7 @@ type userSettings struct {
 	model          string
 	markdownForced bool
 	codeExecution  bool
+	thinkingLevel genai.ThinkingLevel
 }
 
 var (
@@ -440,6 +441,9 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	case "model":
 		us.model = option.Options[0].StringValue()
 		content = fmt.Sprintf("Changed model to `%s`", us.model)
+	case "thinking":
+		us.thinkingLevel = genai.ThinkingLevel(option.Options[0].StringValue())
+		content = fmt.Sprintf("Changed thinking level to `%s`", us.thinkingLevel)
 	case "markdown":
 		us.markdownForced = !us.markdownForced
 		if us.markdownForced {
