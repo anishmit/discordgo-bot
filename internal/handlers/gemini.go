@@ -89,7 +89,7 @@ var (
 		goldmark.WithRendererOptions(html.WithHardWraps(), html.WithXHTML()),
 	)
 
-	safetySetting = []*genai.SafetySetting{
+	safetySettings = []*genai.SafetySetting{
 		{Category: genai.HarmCategoryHateSpeech, Threshold: genai.HarmBlockThresholdOff},
 		{Category: genai.HarmCategoryDangerousContent, Threshold: genai.HarmBlockThresholdOff},
 		{Category: genai.HarmCategoryHarassment, Threshold: genai.HarmBlockThresholdOff},
@@ -194,7 +194,7 @@ func convertToMp3(pcm []byte) ([]byte, error) {
 // buildConfig creates the generation config for a given model and user settings.
 func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{
-		SafetySettings: safetySetting,
+		SafetySettings: safetySettings,
 		Tools:          []*genai.Tool{},
 	}
 	if isTTSModel(userSettings.model) {
@@ -222,7 +222,7 @@ func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 // handleTTS generates a transcript then converts it to audio.
 func handleTTS(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 	transcriptConfig := &genai.GenerateContentConfig{
-		SafetySettings:    safetySetting,
+		SafetySettings:    safetySettings,
 		SystemInstruction: genai.NewContentFromText(ttsSystemInstruction, genai.RoleUser),
 		Tools:             []*genai.Tool{},
 	}
