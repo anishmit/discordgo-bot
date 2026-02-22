@@ -89,7 +89,7 @@ var (
 		goldmark.WithRendererOptions(html.WithHardWraps(), html.WithXHTML()),
 	)
 
-	safetyOff = []*genai.SafetySetting{
+	safetySetting = []*genai.SafetySetting{
 		{Category: genai.HarmCategoryHateSpeech, Threshold: genai.HarmBlockThresholdOff},
 		{Category: genai.HarmCategoryDangerousContent, Threshold: genai.HarmBlockThresholdOff},
 		{Category: genai.HarmCategoryHarassment, Threshold: genai.HarmBlockThresholdOff},
@@ -192,19 +192,19 @@ func convertToMp3(pcm []byte) ([]byte, error) {
 }
 
 // buildConfig creates the generation config for a given model and user settings.
-func buildConfig(us *userSettings, model string) *genai.GenerateContentConfig {
+func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{
-		SafetySettings:    safetyOff,
+		SafetySettings:    safetySetting,
 		SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
 		Tools:             []*genai.Tool{},
 	}
-	if !us.searchDisabled {
+	if !userSettings.searchDisabled {
 		config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 	}
-	if us.codeExecution {
+	if userSettings.codeExecution {
 		config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
 	}
-	if model == "gemini-3-pro-image-preview" {
+	if userSettings.model == "gemini-3-pro-image-preview" {
 		config.ImageConfig = &genai.ImageConfig{AspectRatio: "16:9", ImageSize: "1K"}
 	}
 	return config
@@ -213,13 +213,13 @@ func buildConfig(us *userSettings, model string) *genai.GenerateContentConfig {
 // handleTTS generates a transcript then converts it to audio.
 func handleTTS(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 	transcriptConfig := &genai.GenerateContentConfig{
-		SafetySettings:    safetyOff,
+		SafetySettings:    safetySetting,
 		SystemInstruction: genai.NewContentFromText(ttsSystemInstruction, genai.RoleUser),
 		Tools:             []*genai.Tool{},
 	}
 	transcriptRes, err := clients.GeminiClient.Models.GenerateContent(ctx, "gemini-2.5-pro", contents, transcriptConfig)
 	if err != nil {
-		return nil, fmt.Errorf("generating transcript: %w", err)
+		return nil, err
 	}
 	transcript := transcriptRes.Text()
 	log.Println("Transcript", transcript)
@@ -355,18 +355,18 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			continue
 		}
 
-		us := getUserSettings(m.ChannelID, m.Author.ID)
-		model := us.model
+		userSettings := getUserSettings(m.ChannelID, m.Author.ID)
+		model := userSettings.model
 
 		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s`", model))
 		if err != nil {
-			log.Println("Error sending placeholder:", err)
+			log.Println("Error sending message", err)
 			return
 		}
 
 		ctx := context.Background()
 		startTime := time.Now()
-		config := buildConfig(us, model)
+		config := buildConfig(userSettings)
 		contents := history[m.ChannelID]
 
 		var res *genai.GenerateContentResponse
@@ -401,7 +401,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			appendHistory(m.ChannelID, res.Candidates[0].Content)
 		}
 
-		sendResponse(s, m.ChannelID, responseMsg.ID, timer, resText, files, us.markdownForced)
+		sendResponse(s, m.ChannelID, responseMsg.ID, timer, resText, files, userSettings.markdownForced)
 		break
 	}
 }
