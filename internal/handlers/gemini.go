@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	defaultModel = "gemini-3-flash-preview"
-	maxContents  = 50
+	defaultModel     = "gemini-3-flash-preview"
+	maxContents      = 50
+	maxMessageLength = 2000
 
 	systemInstruction = `- You are a chatbot inside a Discord text channel. 
 - You will receive messages in the following format:
@@ -213,7 +214,7 @@ func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	if userSettings.codeExecution {
 		config.Tools = append(config.Tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
 	}
-	if userSettings.model == "gemini-3-pro-image-preview" {
+	if isImageModel(userSettings.model) {
 		config.ImageConfig = &genai.ImageConfig{AspectRatio: "16:9", ImageSize: "1K"}
 	}
 	return config
@@ -247,17 +248,29 @@ func isTTSModel(model string) bool {
 	return model == "gemini-2.5-pro-preview-tts" || model == "gemini-2.5-flash-preview-tts"
 }
 
+func isImageModel(model string) bool {
+	return model == "gemini-3-pro-image-preview"
+}
+
+func formatTimer(startTime time.Time, model string) string {
+	return fmt.Sprintf("-# `⌛%.1fs` `👤%s`", time.Since(startTime).Seconds(), model)
+}
+
+func hasContent(res *genai.GenerateContentResponse) bool {
+	return len(res.Candidates) > 0 && res.Candidates[0].Content != nil
+}
+
 // extractResponse pulls text and file attachments from a generation result.
 func extractResponse(res *genai.GenerateContentResponse, model string) (string, []*discordgo.File) {
 	var text string
 	var files []*discordgo.File
-	if len(res.Candidates) == 0 || res.Candidates[0].Content == nil {
+	if !hasContent(res) {
 		return "", nil
 	}
 	for _, part := range res.Candidates[0].Content.Parts {
 		if part.InlineData != nil {
 			switch {
-			case model == "gemini-3-pro-image-preview":
+			case isImageModel(model):
 				files = append(files, &discordgo.File{
 					Name: "file.jpeg", ContentType: part.InlineData.MIMEType,
 					Reader: bytes.NewReader(part.InlineData.Data),
@@ -314,7 +327,7 @@ func renderMarkdownScreenshot(mdText string) ([]byte, error) {
 // sendResponse edits the placeholder message with the final content.
 func sendResponse(s *discordgo.Session, channelID, messageID, timerText, resText string, resFiles []*discordgo.File, forceMarkdown bool) {
 	combined := timerText + "\n" + resText
-	if len(combined) <= 2000 && !forceMarkdown {
+	if len(combined) <= maxMessageLength && !forceMarkdown {
 		s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 			Content: &combined, Files: resFiles,
 			ID: messageID, Channel: channelID,
@@ -375,8 +388,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		contents, err := resolveContents(ctx, model, history[m.ChannelID])
 		if err != nil || contents == nil {
-			elapsed := time.Since(startTime).Seconds()
-			timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
+			timer := formatTimer(startTime, model)
 			if err != nil {
 				log.Println("Error resolving contents", err)
 				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer + "\n" + err.Error())
@@ -387,9 +399,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		res, err := clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
-
-		elapsed := time.Since(startTime).Seconds()
-		timer := fmt.Sprintf("-# `⌛%.1fs` `👤%s`", elapsed, model)
+		timer := formatTimer(startTime, model)
 
 		if err != nil {
 			log.Println("Error generating content", err)
@@ -398,7 +408,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		resText, resFiles := extractResponse(res, model)
-		if len(res.Candidates) > 0 && res.Candidates[0].Content != nil {
+		if hasContent(res) {
 			appendHistory(m.ChannelID, res.Candidates[0].Content)
 		}
 
