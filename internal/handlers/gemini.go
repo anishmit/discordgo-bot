@@ -140,15 +140,15 @@ func displayName(m *discordgo.MessageCreate) string {
 	return m.Author.Username
 }
 
-// buildUserParts converts a Discord message into genai parts (text + attachments).
+// buildUserParts converts a Discord message into parts.
 func buildUserParts(s *discordgo.Session, m *discordgo.MessageCreate) ([]*genai.Part, error) {
 	mTime, err := discordgo.SnowflakeTimestamp(m.ID)
 	if err != nil {
-		return nil, fmt.Errorf("getting message time: %w", err)
+		return nil, err
 	}
 	content, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
-		return nil, fmt.Errorf("replacing mentions: %w", err)
+		return nil, err
 	}
 
 	parts := []*genai.Part{
@@ -157,7 +157,7 @@ func buildUserParts(s *discordgo.Session, m *discordgo.MessageCreate) ([]*genai.
 
 	for _, att := range m.Attachments {
 		if part, err := fetchAttachment(att); err != nil {
-			log.Println("Error fetching attachment:", err)
+			log.Println("Error fetching attachment", err)
 		} else {
 			parts = append(parts, part)
 		}
@@ -351,7 +351,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	parts, err := buildUserParts(s, m)
 	if err != nil {
-		log.Println("Error building user parts:", err)
+		log.Println("Error building user parts", err)
 		return
 	}
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
