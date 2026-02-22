@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultModel     = "gemini-3-flash-preview"
+	defaultModel     = "gemini-3-pro-preview"
 	maxContents      = 50
 	maxMessageLength = 2000
 	systemInstruction = `- You are a chatbot inside a Discord text channel. 
@@ -108,7 +108,7 @@ func getUserSettings(channelID, userID string) *userSettings {
 		settings[channelID] = make(map[string]*userSettings)
 	}
 	if settings[channelID][userID] == nil {
-		settings[channelID][userID] = &userSettings{model: defaultModel, thinkingLevel: genai.ThinkingLevelHigh}
+		settings[channelID][userID] = &userSettings{model: defaultModel, thinkingLevel: genai.ThinkingLevelLow}
 	}
 	return settings[channelID][userID]
 }
@@ -216,7 +216,11 @@ func buildConfig(userSettings *userSettings) *genai.GenerateContentConfig {
 	if isImageModel(userSettings.model) {
 		config.ImageConfig = &genai.ImageConfig{AspectRatio: "16:9", ImageSize: "1K"}
 	}
-	// TODO: apply userSettings.thinkingLevel for Gemini 3 models
+	if isGemini3Model(userSettings.model) {
+		config.ThinkingConfig = &genai.ThinkingConfig{
+			ThinkingLevel: userSettings.thinkingLevel,
+		} 
+	}
 	return config
 }
 
@@ -256,8 +260,8 @@ func isGemini3Model(model string) bool {
 	return strings.HasPrefix(model, "gemini-3-")
 }
 
-func formatTimer(startTime time.Time, model string) string {
-	return fmt.Sprintf("-# `⌛%.1fs` `👤%s`", time.Since(startTime).Seconds(), model)
+func formatTimer(startTime time.Time, userSettings *userSettings) string {
+	return fmt.Sprintf("-# `⌛%.1fs` `👤%s` `💭%s`", time.Since(startTime).Seconds(), userSettings.model, strings.ToLower(string(userSettings.thinkingLevel)))
 }
 
 func hasContent(res *genai.GenerateContentResponse) bool {
@@ -380,7 +384,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		userSettings := getUserSettings(m.ChannelID, m.Author.ID)
 		model := userSettings.model
 
-		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s`", model))
+		responseMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("-# `⏳` `👤%s` `💭%s`", model, strings.ToLower(string(userSettings.thinkingLevel))))
 		if err != nil {
 			log.Println("Error sending message", err)
 			return
@@ -392,7 +396,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		contents, err := resolveContents(ctx, model, history[m.ChannelID])
 		if err != nil || contents == nil {
-			timer := formatTimer(startTime, model)
+			timer := formatTimer(startTime, userSettings)
 			if err != nil {
 				log.Println("Error resolving contents", err)
 				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, timer + "\n" + err.Error())
@@ -403,7 +407,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		res, err := clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
-		timer := formatTimer(startTime, model)
+		timer := formatTimer(startTime, userSettings)
 
 		if err != nil {
 			log.Println("Error generating content", err)
