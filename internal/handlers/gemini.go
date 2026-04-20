@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	defaultModel     = "gemini-3.1-pro-preview"
+	defaultModel     = "gemini-3-flash-preview"
 	maxContents      = 50
 	maxMessageLength = 2000
 	systemInstruction = `- You are a chatbot inside a Discord text channel. 
@@ -91,7 +91,8 @@ Available columns (fields to query)
 	3. timestamp_ms: The exact time the message was sent, recorded as a highly precise millisecond number.
 	4. message_id: Discord's internal identification number for the specific message.
 	5. timezone: The timezone context used to determine when the day started (e.g., 'America/Los_Angeles').
-	6. user_id: Discord's internal identification number for the person who sent the message.`,
+	6. user_id: Discord's internal identification number for the person who sent the message.
+	7. speed: The reaction time, recorded in milliseconds, representing how quickly the user sent the message after the new day officially began.`,
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
