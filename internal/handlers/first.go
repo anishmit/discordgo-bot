@@ -210,19 +210,22 @@ func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate)
 		}
 		curTime = curTime.In(curLocation)
 		isoDate := curTime.Format(time.DateOnly)
+		dayStart, _ := time.ParseInLocation(time.DateOnly, isoDate, curLocation)
+		speed := curTime.UnixMilli() - dayStart.UnixMilli()
 		ctx := context.Background()
 		query := `
-			INSERT INTO first_messages (iso_date, content, timestamp_ms, message_id, timezone, user_id)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			INSERT INTO first_messages (iso_date, content, timestamp_ms, message_id, timezone, user_id, speed)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (iso_date) DO UPDATE
 			SET content = EXCLUDED.content,
 				timestamp_ms = EXCLUDED.timestamp_ms,
 				message_id = EXCLUDED.message_id,
 				timezone = EXCLUDED.timezone,
-				user_id = EXCLUDED.user_id
-			WHERE EXCLUDED.timestamp_ms < first_messages.timestamp_ms;
+				user_id = EXCLUDED.user_id,
+				speed = EXCLUDED.speed
+			WHERE EXCLUDED.message_id < first_messages.message_id;
 		`
-		_, err = database.Pool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), m.ID, curTimeZone, m.Author.ID)
+		_, err = database.Pool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), m.ID, curTimeZone, m.Author.ID, speed)
 		if err != nil {
 			log.Println("Error executing database insert", err)
 		}
