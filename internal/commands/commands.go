@@ -118,32 +118,20 @@ var globalCommands = []*discordgo.ApplicationCommand{
 						Required:    true,
 						Choices: []*discordgo.ApplicationCommandOptionChoice{
 							{
-								Name:  "Gemini 3 Pro",
-								Value: "gemini-3-pro-preview",
-							},
-							{
-								Name:  "Gemini 3 Pro Image Preview",
-								Value: "gemini-3-pro-image-preview",
+								Name:  "Gemini 3.1 Pro",
+								Value: "gemini-3.1-pro-preview",
 							},
 							{
 								Name:  "Gemini 3 Flash",
 								Value: "gemini-3-flash-preview",
 							},
 							{
-								Name:  "Gemini 2.5 Pro",
-								Value: "gemini-2.5-pro",
+								Name:  "Gemini 3.1 Flash-Lite",
+								Value: "gemini-3.1-flash-lite-preview",
 							},
 							{
-								Name:  "Gemini 2.5 Flash",
-								Value: "gemini-2.5-flash",
-							},
-							{
-								Name: "Gemini 2.5 Pro TTS",
-								Value: "gemini-2.5-pro-preview-tts",
-							},
-							{
-								Name: "Gemini 2.5 Flash TTS",
-								Value: "gemini-2.5-flash-preview-tts",
+								Name:  "Gemini 3.1 Flash Image",
+								Value: "gemini-3.1-flash-image-preview",
 							},
 						},
 					},

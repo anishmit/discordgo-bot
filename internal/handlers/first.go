@@ -2,10 +2,9 @@ package handlers
 
 import (
 	"context"
-	"firebase.google.com/go/v4/db"
 	"fmt"
-	"github.com/anishmit/discordgo-bot/internal/clients"
 	"github.com/bwmarrin/discordgo"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"sort"
 	"time"
@@ -16,11 +15,11 @@ type timePeriod struct {
 	days int
 }
 type firstMessage struct {
-	Content  string `json:"content"`
-	Time     int64  `json:"date"`
-	MsgID    string `json:"msgId"`
-	UserID   string `json:"userId"`
-	TimeZone string `json:"timeZone"`
+	Content  string
+	Time     int64
+	MsgID    string
+	UserID   string
+	TimeZone string
 }
 type firstMessageSpeed struct {
 	speed int64
@@ -43,8 +42,8 @@ var (
 	}
 	curLocation        *time.Location
 	channelCreatedTime time.Time
-	dbRef              *db.Ref
 	locations          = map[string]*time.Location{}
+	dbPool *pgxpool.Pool
 )
 
 func init() {
@@ -55,7 +54,11 @@ func init() {
 	}
 	locations[curTimeZone] = curLocation
 
-	dbRef = clients.FirebaseDBClient.NewRef("firstMessages")
+	connString := "postgres://bot_user:bot_password@localhost:5432/discord_bot_db"
+	dbPool, err = pgxpool.New(context.Background(), connString)
+	if err != nil {
+		log.Fatalln("Error connecting to database", err)
+	}
 
 	registerCommandHandler("first", firstCommandHandler)
 	registerMessageCreateHandler(firstMessageCreateHandler)
@@ -68,10 +71,25 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	})
 
 	ctx := context.Background()
-	var data map[string]firstMessage
-	if err := dbRef.Get(ctx, &data); err != nil {
+	data := make(map[string]firstMessage)
+	query := `
+		SELECT TO_CHAR(iso_date, 'YYYY-MM-DD'), content, timestamp_ms, message_id, timezone, user_id
+		FROM first_messages
+	`
+	rows, err := dbPool.Query(ctx, query)
+	if err != nil {
 		log.Println("Error reading from database", err)
 		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var dateStr string
+		var fm firstMessage
+		if err := rows.Scan(&dateStr, &fm.Content, &fm.Time, &fm.MsgID, &fm.TimeZone, &fm.UserID); err != nil {
+			log.Println("Error scanning row", err)
+			continue
+		}
+		data[dateStr] = fm
 	}
 
 	options := i.ApplicationCommandData().Options
@@ -196,22 +214,23 @@ func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate)
 			return
 		}
 		curTime = curTime.In(curLocation)
+		isoDate := curTime.Format(time.DateOnly)
 		ctx := context.Background()
-		dbRef.Child(curTime.Format(time.DateOnly)).Transaction(ctx, func(value db.TransactionNode) (interface{}, error) {
-			var firstMsg firstMessage
-			value.Unmarshal(&firstMsg)
-			if firstMsg.MsgID == "" || firstMsg.Time > curTime.UnixMilli() {
-				return firstMessage{
-					Content:  m.Content,
-					Time:     curTime.UnixMilli(),
-					MsgID:    m.ID,
-					UserID:   m.Author.ID,
-					TimeZone: curTimeZone,
-				}, nil
-			} else {
-				return firstMsg, nil
-			}
-		})
+		query := `
+			INSERT INTO first_messages (iso_date, content, timestamp_ms, message_id, timezone, user_id)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (iso_date) DO UPDATE
+			SET content = EXCLUDED.content,
+				timestamp_ms = EXCLUDED.timestamp_ms,
+				message_id = EXCLUDED.message_id,
+				timezone = EXCLUDED.timezone,
+				user_id = EXCLUDED.user_id
+			WHERE EXCLUDED.timestamp_ms < first_messages.timestamp_ms;
+		`
+		_, err = dbPool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), m.ID, curTimeZone, m.Author.ID)
+		if err != nil {
+			log.Println("Error executing database insert", err)
+		}
 	}
 }
 
