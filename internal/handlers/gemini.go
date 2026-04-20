@@ -24,6 +24,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/anishmit/discordgo-bot/internal/clients"
+	"github.com/anishmit/discordgo-bot/internal/database"
 )
 
 const (
@@ -237,6 +238,30 @@ func extractResponse(res *genai.GenerateContentResponse, model string) (string, 
 	return text, files, true
 }
 
+// queryDb executes a SQL query and returns the results in a marshalable format.
+func queryDb(query string) ([]map[string]any, error) {
+	rows, err := database.Pool.Query(context.Background(), query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []map[string]any
+	fields := rows.FieldDescriptions()
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(fields))
+		for i, fd := range fields {
+			row[string(fd.Name)] = values[i]
+		}
+		results = append(results, row)
+	}
+	return results, nil
+}
+
 // renderMarkdownScreenshot converts markdown text to a PNG via headless Chrome.
 func renderMarkdownScreenshot(mdText string) ([]byte, error) {
 	var htmlBuf bytes.Buffer
@@ -334,13 +359,40 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		contents := history[m.ChannelID]
 
 		res, err := clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
-		subtext := getSubtext(startTime, userSettings)
 
 		if err != nil {
+			subtext := getSubtext(startTime, userSettings)
 			log.Println("Error generating content", err)
-			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, subtext + "\n" + err.Error())
+			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, subtext+"\n"+err.Error())
 			return
 		}
+
+		for len(res.FunctionCalls()) > 0 {
+			appendHistory(m.ChannelID, res.Candidates[0].Content)
+			for _, fc := range res.FunctionCalls() {
+				var funcResp map[string]any
+				if fc.Name == "first_msgs" {
+					query, _ := fc.Args["query"].(string)
+					result, err := queryDb(query)
+					if err != nil {
+						funcResp = map[string]any{"error": err.Error()}
+					} else {
+						funcResp = map[string]any{"output": result}
+					}
+				}
+				appendHistory(m.ChannelID, genai.NewContentFromFunctionResponse(fc.Name, funcResp, genai.RoleUser))
+			}
+			contents = history[m.ChannelID]
+			res, err = clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
+			if err != nil {
+				subtext := getSubtext(startTime, userSettings)
+				log.Println("Error generating content", err)
+				s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, subtext+"\n"+err.Error())
+				return
+			}
+		}
+
+		subtext := getSubtext(startTime, userSettings)
 
 		resText, resFiles, validRes := extractResponse(res, model)
 		if validRes {

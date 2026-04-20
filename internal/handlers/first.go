@@ -3,11 +3,13 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"github.com/bwmarrin/discordgo"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"sort"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/anishmit/discordgo-bot/internal/database"
 )
 
 type timePeriod struct {
@@ -43,7 +45,6 @@ var (
 	curLocation        *time.Location
 	channelCreatedTime time.Time
 	locations          = map[string]*time.Location{}
-	dbPool *pgxpool.Pool
 )
 
 func init() {
@@ -53,12 +54,6 @@ func init() {
 		log.Fatalln("Error loading location", err)
 	}
 	locations[curTimeZone] = curLocation
-
-	connString := "postgres://bot_user:bot_password@localhost:5432/discord_bot_db"
-	dbPool, err = pgxpool.New(context.Background(), connString)
-	if err != nil {
-		log.Fatalln("Error connecting to database", err)
-	}
 
 	registerCommandHandler("first", firstCommandHandler)
 	registerMessageCreateHandler(firstMessageCreateHandler)
@@ -76,7 +71,7 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		SELECT TO_CHAR(iso_date, 'YYYY-MM-DD'), content, timestamp_ms, message_id, timezone, user_id
 		FROM first_messages
 	`
-	rows, err := dbPool.Query(ctx, query)
+	rows, err := database.Pool.Query(ctx, query)
 	if err != nil {
 		log.Println("Error reading from database", err)
 		return
@@ -227,7 +222,7 @@ func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate)
 				user_id = EXCLUDED.user_id
 			WHERE EXCLUDED.timestamp_ms < first_messages.timestamp_ms;
 		`
-		_, err = dbPool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), m.ID, curTimeZone, m.Author.ID)
+		_, err = database.Pool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), m.ID, curTimeZone, m.Author.ID)
 		if err != nil {
 			log.Println("Error executing database insert", err)
 		}
