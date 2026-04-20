@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"time"
 
@@ -175,28 +177,33 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			return firstMessageSpeeds[i].speed < firstMessageSpeeds[j].speed
 		})
-		var description string
-		for i := range min(29, len(data)) {
-			firstMessage := data[firstMessageSpeeds[i].date]
-			description += fmt.Sprintf(
-				"%d. <@%s>: **%d** ms on [%s](https://discord.com/channels/%s/%s/%s)\n",
-				i+1,
-				firstMessage.UserID,
-				firstMessageSpeeds[i].speed,
-				firstMessageSpeeds[i].date,
-				serverID,
-				channelID,
-				firstMessage.MsgID,
-			)
+
+		type speedEntry struct {
+			Date   string `json:"date"`
+			Speed  int64  `json:"speed"`
+			UserID string `json:"user_id"`
 		}
+		entries := make([]speedEntry, 0, len(firstMessageSpeeds))
+		for _, fms := range firstMessageSpeeds {
+			entries = append(entries, speedEntry{
+				Date:   fms.date,
+				Speed:  fms.speed,
+				UserID: data[fms.date].UserID,
+			})
+		}
+		file, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			log.Println("Error marshaling speeds", err)
+			return
+		}
+		if err := os.WriteFile("first_speeds.json", file, 0644); err != nil {
+			log.Println("Error writing file", err)
+			return
+		}
+
+		content := fmt.Sprintf("Wrote %d entries to first_speeds.json", len(entries))
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Embeds: []*discordgo.MessageEmbed{
-				{
-					Title:       "First Leaderboard (Time)",
-					Color:       0xff4d01,
-					Description: description,
-				},
-			},
+			Content: &content,
 		})
 	}
 }
