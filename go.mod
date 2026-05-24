@@ -8,12 +8,14 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/chromedp/cdproto v0.0.0-20250803210736-d308e07a266d
 	github.com/chromedp/chromedp v0.14.2
+	github.com/google/uuid v1.6.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
 	github.com/jonas747/ogg v0.0.0-20161220051205-b4f6f4cf3757
 	github.com/yuin/goldmark v1.7.16
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	google.golang.org/api v0.265.0
-	google.golang.org/genai v1.54.0
+	google.golang.org/genai v1.58.0
 )
 
 require (
@@ -49,13 +51,11 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.9.2 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
