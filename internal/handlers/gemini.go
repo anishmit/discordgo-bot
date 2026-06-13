@@ -192,7 +192,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Generate content.
+	// Generate content
 	startTime := time.Now()
 	config := buildConfig(&us)
 	res, err := clients.GeminiClient.Models.GenerateContent(context.Background(), us.model, contents(m.ChannelID), config)
@@ -210,7 +210,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Extract and send the response.
+	// Extract and send the response
 	resText, resFiles, resContent := extractResponse(res, us.model)
 	appendHistory(m.ChannelID, "", resContent)
 	sendResponse(s, m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us), resText, resFiles, us.forceMarkdownRendering)
