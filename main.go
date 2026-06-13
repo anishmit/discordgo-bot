@@ -23,6 +23,7 @@ func init() {
 func main() {
 	s.AddHandler(handlers.OnInteractionCreate)
 	s.AddHandler(handlers.OnMessageCreate)
+	s.AddHandler(handlers.OnMessageUpdate)
 	s.AddHandler(handlers.OnReady)
 
 	err := s.Open()

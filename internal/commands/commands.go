@@ -149,13 +149,69 @@ var globalCommands = []*discordgo.ApplicationCommand{
 								Required:    true,
 								Choices: []*discordgo.ApplicationCommandOptionChoice{
 									{
+										Name:  "Minimal",
+										Value: "MINIMAL",
+									},
+									{
 										Name:  "Low",
 										Value: "LOW",
+									},
+									{
+										Name:  "Medium",
+										Value: "MEDIUM",
 									},
 									{
 										Name:  "High",
 										Value: "HIGH",
 									},
+								},
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "aspect-ratio",
+						Description: "Change image aspect ratio",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type:        discordgo.ApplicationCommandOptionString,
+								Name:        "ratio",
+								Description: "Aspect ratio",
+								Required:    true,
+								Choices: []*discordgo.ApplicationCommandOptionChoice{
+									{Name: "1:1", Value: "1:1"},
+									{Name: "1:4", Value: "1:4"},
+									{Name: "1:8", Value: "1:8"},
+									{Name: "2:3", Value: "2:3"},
+									{Name: "3:2", Value: "3:2"},
+									{Name: "3:4", Value: "3:4"},
+									{Name: "4:1", Value: "4:1"},
+									{Name: "4:3", Value: "4:3"},
+									{Name: "4:5", Value: "4:5"},
+									{Name: "5:4", Value: "5:4"},
+									{Name: "8:1", Value: "8:1"},
+									{Name: "9:16", Value: "9:16"},
+									{Name: "16:9", Value: "16:9"},
+									{Name: "21:9", Value: "21:9"},
+								},
+							},
+						},
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "image-size",
+						Description: "Change image size",
+						Options: []*discordgo.ApplicationCommandOption{
+							{
+								Type:        discordgo.ApplicationCommandOptionString,
+								Name:        "size",
+								Description: "Image size",
+								Required:    true,
+								Choices: []*discordgo.ApplicationCommandOptionChoice{
+									{Name: "512", Value: "512"},
+									{Name: "1K", Value: "1K"},
+									{Name: "2K", Value: "2K"},
+									{Name: "4K", Value: "4K"},
 								},
 							},
 						},

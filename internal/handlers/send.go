@@ -14,16 +14,21 @@ var (
 	msgNum = 0
 	requestBody = `{"content": "Scheduled message %d sent."}`
 	authorizationHeader = fmt.Sprintf("Bot %s", os.Getenv("BOT_TOKEN"))
+	userAuthorizationHeader = os.Getenv("USER_TOKEN")
 )
 
 func sendScheduledMessage(channelID string, num int) {
-	if req, err := http.NewRequest("POST", fmt.Sprintf("https://discord.com/api/channels/%s/messages", channelID), strings.NewReader(fmt.Sprintf(requestBody, num))); err != nil {
-		log.Println("Could not create new HTTP request", err)
-	} else {
-		req.Header.Add("Authorization", authorizationHeader)
-		req.Header.Add("Content-Type", "application/json")
-		http.DefaultClient.Do(req)
+	send := func(auth string) {
+		if req, err := http.NewRequest("POST", fmt.Sprintf("https://discord.com/api/channels/%s/messages", channelID), strings.NewReader(fmt.Sprintf(requestBody, num))); err != nil {
+			log.Println("Could not create new HTTP request", err)
+		} else {
+			req.Header.Add("Authorization", auth)
+			req.Header.Add("Content-Type", "application/json")
+			http.DefaultClient.Do(req)
+		}
 	}
+	go send(authorizationHeader)
+	send(userAuthorizationHeader)
 }
 
 func init() {

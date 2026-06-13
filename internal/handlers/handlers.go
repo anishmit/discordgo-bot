@@ -8,6 +8,7 @@ var (
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){}
 	componentHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){}
 	messageCreateHandlers []func(s *discordgo.Session, m *discordgo.MessageCreate)
+	messageUpdateHandlers []func(s *discordgo.Session, m *discordgo.MessageUpdate)
 	readyHandlers []func(s *discordgo.Session, r *discordgo.Ready)
 )
 
@@ -21,6 +22,10 @@ func registerComponentHandler(name string, handler func(s *discordgo.Session, i 
 
 func registerMessageCreateHandler(handler func(s *discordgo.Session, m *discordgo.MessageCreate)) {
 	messageCreateHandlers = append(messageCreateHandlers, handler)
+}
+
+func registerMessageUpdateHandler(handler func(s *discordgo.Session, m *discordgo.MessageUpdate)) {
+	messageUpdateHandlers = append(messageUpdateHandlers, handler)
 }
 
 func registerReadyHandler(handler func(s *discordgo.Session, r *discordgo.Ready)) {
@@ -41,6 +46,12 @@ func OnInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func OnMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	for _, handler := range messageCreateHandlers {
+		handler(s, m)
+	}
+}
+
+func OnMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
+	for _, handler := range messageUpdateHandlers {
 		handler(s, m)
 	}
 }
