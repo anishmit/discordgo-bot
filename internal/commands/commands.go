@@ -87,8 +87,8 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Configure Gemini settings",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type: discordgo.ApplicationCommandOptionSubCommandGroup,
-				Name: "settings",
+				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Name:        "settings",
 				Description: "Settings",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
@@ -131,7 +131,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 									},
 									{
 										Name:  "Gemini 3.1 Flash Image",
-										Value: "gemini-3.1-flash-image-preview",
+										Value: "gemini-3.1-flash-image",
 									},
 								},
 							},

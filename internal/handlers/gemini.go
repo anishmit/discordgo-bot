@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -29,7 +30,7 @@ import (
 )
 
 const (
-	maxContents    = 50
+	maxContents    = 100
 	maxMsgLength   = 2000
 	maxEmbedLength = 4096
 )
@@ -47,6 +48,31 @@ type userSettings struct {
 	thinkingLevel          genai.ThinkingLevel
 	aspectRatio            string
 	imageSize              string
+}
+
+type modelInfo struct {
+	thinkingLevels  []genai.ThinkingLevel
+	inputTokenLimit int32
+}
+
+type responseGuard struct {
+	mu        sync.Mutex
+	responded bool
+}
+
+func (g *responseGuard) tryUpdate(fn func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.responded {
+		fn()
+	}
+}
+
+func (g *responseGuard) finalize(fn func()) {
+	g.mu.Lock()
+	g.responded = true
+	g.mu.Unlock()
+	fn()
 }
 
 func loadLocation(name string) *time.Location {
@@ -103,11 +129,11 @@ delimiter: <random delimiter>
 		{Category: genai.HarmCategorySexuallyExplicit, Threshold: genai.HarmBlockThresholdOff},
 	}
 
-	supportedThinkingLevels = map[string][]genai.ThinkingLevel{
-		"gemini-3.5-flash":               {genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh},
-		"gemini-3.1-pro-preview":         {genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh},
-		"gemini-3-flash-preview":         {genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh},
-		"gemini-3.1-flash-image-preview": {genai.ThinkingLevelMinimal, genai.ThinkingLevelHigh},
+	models = map[string]*modelInfo{
+		"gemini-3.5-flash":       {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
+		"gemini-3.1-pro-preview": {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
+		"gemini-3-flash-preview": {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
+		"gemini-3.1-flash-image": {inputTokenLimit: 131072, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelHigh}},
 	}
 
 	firstMsgsFuncDeclaration = &genai.FunctionDeclaration{
@@ -192,28 +218,48 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Generate content
 	startTime := time.Now()
 	config := buildConfig(&us)
-	res, err := clients.GeminiClient.Models.GenerateContent(context.Background(), us.model, contents(m.ChannelID), config)
+	initialContents := contents(m.ChannelID)
+
+	var guard responseGuard
+	go func() {
+		ctr, err := clients.GeminiClient.Models.CountTokens(context.Background(), us.model, initialContents, &genai.CountTokensConfig{
+			SystemInstruction: config.SystemInstruction,
+			Tools:             config.Tools,
+		})
+		if err != nil {
+			log.Println("Error counting tokens", err)
+			return
+		}
+		guard.tryUpdate(func() {
+			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, getThinkingSubtextWithTokens(&us, ctr.TotalTokens))
+		})
+	}()
+
+	res, err := clients.GeminiClient.Models.GenerateContent(context.Background(), us.model, initialContents, config)
 	if err != nil {
 		log.Println("Error generating content", err)
-		s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us) + "\n" + err.Error())
+		guard.finalize(func() {
+			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us, res)+"\n"+err.Error())
+		})
 		return
 	}
 
-	// Handle function calls in a loop until the model produces a final response
 	res, err = handleFunctionCalls(res, m.ChannelID, &us, config)
 	if err != nil {
 		log.Println("Error generating content", err)
-		s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us) + "\n" + err.Error())
+		guard.finalize(func() {
+			s.ChannelMessageEdit(m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us, res)+"\n"+err.Error())
+		})
 		return
 	}
 
-	// Extract and send the response
 	resText, resFiles, resContent := extractResponse(res, us.model)
 	appendHistory(m.ChannelID, "", resContent)
-	sendResponse(s, m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us), resText, resFiles, us.forceMarkdownRendering)
+	guard.finalize(func() {
+		sendResponse(s, m.ChannelID, responseMsg.ID, getResponseSubtext(startTime, &us, res), resText, resFiles, us.forceMarkdownRendering)
+	})
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
@@ -234,7 +280,6 @@ func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	}
 	entry.content.Parts = parts
 }
-
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	for _, user := range m.Mentions {
@@ -334,7 +379,7 @@ func fetchMedia(url, contentType string) (*genai.Part, error) {
 
 func defaultUserSettings() *userSettings {
 	return &userSettings{
-		model:         "gemini-3-flash-preview",
+		model:         "gemini-3.5-flash",
 		thinkingLevel: genai.ThinkingLevelMinimal,
 		search:        true,
 		aspectRatio:   "16:9",
@@ -421,11 +466,11 @@ func buildConfig(us *userSettings) *genai.GenerateContentConfig {
 }
 
 func isImageModel(model string) bool {
-	return model == "gemini-3.1-flash-image-preview"
+	return model == "gemini-3.1-flash-image"
 }
 
 func isThinkingSupported(model string, level genai.ThinkingLevel) bool {
-	return slices.Contains(supportedThinkingLevels[model], level)
+	return slices.Contains(models[model].thinkingLevels, level)
 }
 
 func handleFunctionCalls(res *genai.GenerateContentResponse, channelID string, us *userSettings, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
@@ -504,8 +549,16 @@ func getThinkingSubtext(us *userSettings) string {
 	return fmt.Sprintf("-# ⏳ thinking    🤖 %s    🧠 %s", us.model, strings.ToLower(string(us.thinkingLevel)))
 }
 
-func getResponseSubtext(startTime time.Time, us *userSettings) string {
-	return fmt.Sprintf("-# 💡 %.1fs    🤖 %s    🧠 %s", time.Since(startTime).Seconds(), us.model, strings.ToLower(string(us.thinkingLevel)))
+func getThinkingSubtextWithTokens(us *userSettings, promptTokens int32) string {
+	return fmt.Sprintf("-# ⏳ thinking    🤖 %s    🧠 %s    🪙 %d / %d", us.model, strings.ToLower(string(us.thinkingLevel)), promptTokens, models[us.model].inputTokenLimit)
+}
+
+func getResponseSubtext(startTime time.Time, us *userSettings, res *genai.GenerateContentResponse) string {
+	var promptTokens int32
+	if res != nil && res.UsageMetadata != nil {
+		promptTokens = res.UsageMetadata.PromptTokenCount
+	}
+	return fmt.Sprintf("-# 💡 %.1fs    🤖 %s    🧠 %s    🪙 %d / %d", time.Since(startTime).Seconds(), us.model, strings.ToLower(string(us.thinkingLevel)), promptTokens, models[us.model].inputTokenLimit)
 }
 
 func sendResponse(s *discordgo.Session, channelID, messageID, subtext, resText string, resFiles []*discordgo.File, forceMarkdownRendering bool) {
@@ -539,7 +592,7 @@ func sendResponse(s *discordgo.Session, channelID, messageID, subtext, resText s
 	png, err := renderMarkdownScreenshot(resText)
 	if err != nil {
 		log.Println("Markdown render error", err)
-		s.ChannelMessageEdit(channelID, messageID, subtext + "\n" + err.Error())
+		s.ChannelMessageEdit(channelID, messageID, subtext+"\n"+err.Error())
 		return
 	}
 	s.ChannelMessageEditComplex(&discordgo.MessageEdit{
@@ -613,7 +666,7 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 		case "model":
 			us.model = option.Options[0].StringValue()
 			if !isThinkingSupported(us.model, us.thinkingLevel) {
-				us.thinkingLevel = supportedThinkingLevels[us.model][0]
+				us.thinkingLevel = models[us.model].thinkingLevels[0]
 				content = fmt.Sprintf("Changed model to `%s` (thinking level reset to `%s`)", us.model, us.thinkingLevel)
 			} else {
 				content = fmt.Sprintf("Changed model to `%s`", us.model)
