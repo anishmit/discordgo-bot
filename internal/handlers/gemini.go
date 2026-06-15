@@ -3,9 +3,12 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"math/rand/v2"
 	"mime"
 	"net/http"
 	"slices"
@@ -237,7 +240,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		})
 	}()
 
-	res, err := clients.GeminiClient.Models.GenerateContent(context.Background(), us.model, initialContents, config)
+	res, err := generateContentWithRetry(context.Background(), us.model, initialContents, config)
 	if err != nil {
 		log.Println("Error generating content", err)
 		guard.finalize(func() {
@@ -379,7 +382,7 @@ func fetchMedia(url, contentType string) (*genai.Part, error) {
 
 func defaultUserSettings() *userSettings {
 	return &userSettings{
-		model:         "gemini-3.5-flash",
+		model:         "gemini-3-flash-preview",
 		thinkingLevel: genai.ThinkingLevelMinimal,
 		search:        true,
 		aspectRatio:   "16:9",
@@ -473,6 +476,43 @@ func isThinkingSupported(model string, level genai.ThinkingLevel) bool {
 	return slices.Contains(models[model].thinkingLevels, level)
 }
 
+const (
+	retryInitialDelay = time.Second      // delay before the first retry
+	retryAttempts     = 5                 // max retry attempts after the initial call
+	retryExpBase      = 2                 // exponential backoff base
+	retryMaxDelay     = 60 * time.Second  // cap on the delay between retries
+)
+
+func generateContentWithRetry(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+	var res *genai.GenerateContentResponse
+	var err error
+	for attempt := 0; ; attempt++ {
+		res, err = clients.GeminiClient.Models.GenerateContent(ctx, model, contents, config)
+		if err == nil || !isRetryable(err) || attempt >= retryAttempts {
+			return res, err
+		}
+
+		backoff := min(float64(retryInitialDelay)*math.Pow(retryExpBase, float64(attempt)), float64(retryMaxDelay))
+		delay := time.Duration(rand.Float64() * backoff)
+		log.Printf("GenerateContent failed (%v), retrying in %v (attempt %d/%d)", err, delay, attempt+1, retryAttempts)
+		select {
+		case <-ctx.Done():
+			return res, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func isRetryable(err error) bool {
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == http.StatusRequestTimeout ||
+		apiErr.Code == http.StatusTooManyRequests ||
+		(apiErr.Code >= 500 && apiErr.Code <= 599)
+}
+
 func handleFunctionCalls(res *genai.GenerateContentResponse, channelID string, us *userSettings, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 	ctx := context.Background()
 	for len(res.FunctionCalls()) > 0 {
@@ -491,7 +531,7 @@ func handleFunctionCalls(res *genai.GenerateContentResponse, channelID string, u
 			appendHistory(channelID, "", genai.NewContentFromFunctionResponse(fc.Name, funcResp, genai.RoleUser))
 		}
 		var err error
-		res, err = clients.GeminiClient.Models.GenerateContent(ctx, us.model, contents(channelID), config)
+		res, err = generateContentWithRetry(ctx, us.model, contents(channelID), config)
 		if err != nil {
 			return nil, err
 		}
