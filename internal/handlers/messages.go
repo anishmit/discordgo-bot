@@ -1,68 +1,73 @@
 package handlers
 
 import (
+	"context"
+	"log"
+	"strconv"
+	"time"
+
 	"github.com/bwmarrin/discordgo"
+
+	"github.com/anishmit/discordgo-bot/internal/database"
 )
+
+const messageSyncInterval = 5 * time.Minute
 
 func init() {
 	registerReadyHandler(messagesReadyHandler)
 }
 
 func messagesReadyHandler(s *discordgo.Session, r *discordgo.Ready) {
-	go populateMessages(s)
+	go runMessageSync(s)
 }
 
-func populateMessages(s *discordgo.Session) {
-	/*
+func runMessageSync(s *discordgo.Session) {
 	ctx := context.Background()
+	for {
+		syncMessages(ctx, s)
+		time.Sleep(messageSyncInterval)
+	}
+}
 
-	// Resume from the latest message we already have, or start from the
-	// beginning (afterID = "1") if the table is empty. message_id is stored
-	// as text, so cast to bigint for a correct numeric max (snowflakes in
-	// this channel span the 18- to 19-digit boundary).
-	afterID := "1"
+func syncMessages(ctx context.Context, s *discordgo.Session) {
 	var latest *int64
-	if err := database.Pool.QueryRow(ctx, "SELECT MAX(message_id::bigint) FROM messages").Scan(&latest); err != nil {
-		log.Println("Error getting latest message id", err)
+	if err := database.Pool.QueryRow(ctx, "SELECT MAX(message_id) FROM messages").Scan(&latest); err != nil {
+		log.Println("Error getting latest message ID", err)
 		return
 	}
+	var afterID int64
 	if latest != nil {
-		afterID = strconv.FormatInt(*latest, 10)
+		afterID = *latest
 	}
 
-	total := 0
+	inserted := 0
 	for {
-		msgs, err := s.ChannelMessages(channelID, 100, "", afterID, "")
+		msgs, err := s.ChannelMessages(channelID, 100, "", strconv.FormatInt(afterID, 10), "")
 		if err != nil {
 			log.Println("Error fetching channel messages", err)
 			return
 		}
-		if len(msgs) == 0 {
-			break
-		}
-		total += len(msgs)
-		log.Printf("Fetched %d messages so far", total)
 
-		// Advance afterID to the highest (newest) message ID in the batch.
-		// The API may return the batch newest-first, so track the max
-		// numerically rather than assuming order.
-		var maxID int64
-		if id, err := strconv.ParseInt(afterID, 10, 64); err == nil {
-			maxID = id
-		}
-
+		maxID := afterID
 		for _, m := range msgs {
-			// Always advance past this message, even if we skip inserting it,
-			// so a batch of only webhook messages can't stall pagination.
-			if id, err := strconv.ParseInt(m.ID, 10, 64); err == nil && id > maxID {
+			id, err := strconv.ParseInt(m.ID, 10, 64)
+			if err != nil {
+				log.Println("Error parsing message ID", err)
+				continue
+			}
+			if id > maxID {
 				maxID = id
 			}
 
-			// Webhook-sent messages do not have a full author.
 			if m.Author == nil {
 				continue
 			}
 
+			userID, err := strconv.ParseInt(m.Author.ID, 10, 64)
+			if err != nil {
+				log.Println("Error parsing user ID", err)
+				continue
+			}
 			t, err := discordgo.SnowflakeTimestamp(m.ID)
 			if err != nil {
 				log.Println("Error getting message time", err)
@@ -73,16 +78,21 @@ func populateMessages(s *discordgo.Session) {
 				VALUES ($1, $2, $3, $4)
 				ON CONFLICT (message_id) DO NOTHING;
 			`
-			if _, err := database.Pool.Exec(ctx, query, m.ID, m.Author.ID, t.UnixMilli(), m.Content); err != nil {
-				log.Println("Error executing database insert", err)
+			res, err := database.Pool.Exec(ctx, query, id, userID, t.UnixMilli(), m.Content)
+			if err != nil {
+				log.Println("Error inserting into database", err)
 				continue
 			}
+			inserted += int(res.RowsAffected())
 		}
-		afterID = strconv.FormatInt(maxID, 10)
+		afterID = maxID
 
 		if len(msgs) < 100 {
 			break
 		}
 	}
-	*/
+
+	if inserted > 0 {
+		log.Printf("Synced %d new message(s)", inserted)
+	}
 }

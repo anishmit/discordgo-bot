@@ -11,19 +11,7 @@ var devCommands = []*discordgo.ApplicationCommand{}
 var globalCommands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "first",
-		Description: "Data about first messages",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Name:        "count",
-				Description: "Leaderboard for number of first messages",
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-			},
-			{
-				Name:        "time",
-				Description: "Leaderboard for fastest first messages",
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
-			},
-		},
+		Description: "Leaderboard for number of first messages",
 	},
 	{
 		Name:        "send",
