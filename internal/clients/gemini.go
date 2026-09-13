@@ -6,7 +6,7 @@ import (
 	"google.golang.org/genai"
 )
 
-const project = "project-002446c8-75a7-4733-b3e"
+const project = "project-2d1aef35-db7e-45b1-b11"
 const location = "global"
 
 var GeminiClient *genai.Client

@@ -137,7 +137,8 @@ delimiter: <random delimiter>
 	}
 
 	models = map[string]*modelInfo{
-		"gemini-3.5-flash":       {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
+		"gemini-3.8-flash":       {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
+		"gemini-3.5-flash-lite": {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
 		"gemini-3.1-pro-preview": {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
 		"gemini-3-flash-preview": {inputTokenLimit: 1048576, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelLow, genai.ThinkingLevelMedium, genai.ThinkingLevelHigh}},
 		"gemini-3.1-flash-image": {inputTokenLimit: 131072, thinkingLevels: []genai.ThinkingLevel{genai.ThinkingLevelMinimal, genai.ThinkingLevelHigh}},
@@ -448,8 +449,8 @@ func fetchMedia(url, contentType string) (*genai.Part, error) {
 
 func defaultUserSettings() *userSettings {
 	return &userSettings{
-		model:         "gemini-3.5-flash",
-		thinkingLevel: genai.ThinkingLevelMinimal,
+		model:         "gemini-3.8-flash",
+		thinkingLevel: genai.ThinkingLevelHigh,
 		search:        true,
 		aspectRatio:   "16:9",
 		imageSize:     "1K",

@@ -106,8 +106,12 @@ var globalCommands = []*discordgo.ApplicationCommand{
 								Required:    true,
 								Choices: []*discordgo.ApplicationCommandOptionChoice{
 									{
-										Name:  "Gemini 3.5 Flash",
-										Value: "gemini-3.5-flash",
+										Name:  "Gemini 3.8 Flash",
+										Value: "gemini-3.8-flash",
+									},
+									{
+										Name:  "Gemini 3.5 Flash Lite",
+										Value: "gemini-3.5-flash-lite",
 									},
 									{
 										Name:  "Gemini 3.1 Pro",
