@@ -3,11 +3,10 @@ package clients
 import (
 	"context"
 	"log"
+	"os"
+
 	"google.golang.org/genai"
 )
-
-const project = "project-2d1aef35-db7e-45b1-b11"
-const location = "global"
 
 var GeminiClient *genai.Client
 
@@ -15,9 +14,8 @@ func init() {
 	ctx := context.Background()
 	var err error
 	GeminiClient, err = genai.NewClient(ctx, &genai.ClientConfig{
-		Project:  project,
-		Location: location,
-		Backend: genai.BackendEnterprise,
+		APIKey:  os.Getenv("GEMINI_API_KEY"),
+		Backend: genai.BackendVertexAI,
 	})
 	if err != nil {
 		log.Fatalln("Failed to create genai client", err)
