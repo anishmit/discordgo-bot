@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	geminiModel        = "gemini-3.5-flash-lite"
-	maxMsgLength       = 2000
+	geminiModel = "gemini-3.5-flash-lite"
+	maxMsgLength = 2000
 	streamEditInterval = 2 * time.Second
 )
 
