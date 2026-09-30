@@ -2,9 +2,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +30,7 @@ const (
 	streamEditInterval   = 2 * time.Second
 	thoughtsThreadName   = "Thoughts"
 	threadArchiveMinutes = 1440
-	maxHistoryEntries    = 50
+	maxHistoryEntries    = 100
 	historyTimeZone      = "America/Los_Angeles"
 
 	modelSubtext    = "🤖 " + geminiModel + "    🧠 default"
@@ -78,8 +82,8 @@ type msgRef struct {
 }
 
 type historyEntry struct {
-	msgID   string
-	content string
+	msgID    string
+	contents []interactions.Content
 }
 
 var (
@@ -102,16 +106,16 @@ func init() {
 }
 
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author == nil || m.Author.ID == s.State.User.ID || m.Content == "" {
+	if m.Author == nil || m.Author.ID == s.State.User.ID || (m.Content == "" && len(m.Attachments) == 0) {
 		return
 	}
 
-	entry, err := messageEntry(s, m.Message)
+	contents, err := messageContents(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	appendHistory(m.ChannelID, m.ID, entry)
+	appendHistory(m.ChannelID, m.ID, contents)
 
 	if !isBotMentioned(s, m) {
 		return
@@ -136,7 +140,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		threadID = thread.ID
 	}
 
-	text, err := streamResponse(context.Background(), s, channelHistory(m.ChannelID), answer, threadID)
+	text, outputs, err := streamResponse(context.Background(), s, channelHistory(m.ChannelID), answer, threadID)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(time.Since(startTime)), err.Error())
@@ -146,19 +150,19 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		text = "Empty response"
 	}
 	editMessage(s, answer, doneSubtext(time.Since(startTime)), text)
-	appendHistory(m.ChannelID, msg.ID, formatEntry(msg.ID, s.State.User.Username, s.State.User.ID, text))
+	appendHistory(m.ChannelID, msg.ID, outputs)
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID {
 		return
 	}
-	entry, err := messageEntry(s, m.Message)
+	contents, err := messageContents(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	updateHistory(m.ChannelID, m.ID, entry)
+	updateHistory(m.ChannelID, m.ID, contents)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -170,21 +174,113 @@ func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	return false
 }
 
-func messageEntry(s *discordgo.Session, m *discordgo.Message) (string, error) {
-	content, err := m.ContentWithMoreMentionsReplaced(s)
+func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions.Content, error) {
+	text, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return formatEntry(m.ID, displayName(m), m.Author.ID, content), nil
+
+	var media []interactions.Content
+	for _, att := range m.Attachments {
+		if content, ok := fetchMedia(att.URL, att.ContentType); ok {
+			media = append(media, content)
+		}
+	}
+	for _, embed := range m.Embeds {
+		url := embedMediaURL(embed)
+		if url == "" {
+			continue
+		}
+		if content, ok := fetchMedia(url, ""); ok {
+			media = append(media, content)
+		}
+	}
+	return entryContents(m.ID, displayName(m), m.Author.ID, text, media), nil
 }
 
-func formatEntry(msgID, author, authorID, content string) string {
+func entryContents(msgID, author, authorID, text string, media []interactions.Content) []interactions.Content {
 	timestamp, err := discordgo.SnowflakeTimestamp(msgID)
 	if err != nil {
 		timestamp = time.Now()
 	}
-	return fmt.Sprintf("timestamp: %s\nauthor: %s (%s)\ncontent: %s\ndelimiter: %s",
-		timestamp.In(timeZone).Format(time.RFC3339Nano), author, authorID, content, delimiter)
+	header := fmt.Sprintf("timestamp: %s\nauthor: %s (%s)\ncontent: %s",
+		timestamp.In(timeZone).Format(time.RFC3339Nano), author, authorID, text)
+
+	contents := []interactions.Content{textContent(header)}
+	contents = append(contents, media...)
+	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
+}
+
+func textContent(text string) interactions.Content {
+	return interactions.NewContent(interactions.TextContent{Text: text})
+}
+
+func embedMediaURL(e *discordgo.MessageEmbed) string {
+	switch e.Type {
+	case discordgo.EmbedTypeImage:
+		if e.Thumbnail == nil {
+			return ""
+		}
+		if e.Thumbnail.ProxyURL != "" {
+			return e.Thumbnail.ProxyURL
+		}
+		return e.Thumbnail.URL
+	case discordgo.EmbedTypeGifv, discordgo.EmbedTypeVideo:
+		if e.Video != nil {
+			return e.Video.URL
+		}
+	}
+	return ""
+}
+
+func fetchMedia(url, contentType string) (interactions.Content, bool) {
+	res, err := http.Get(url)
+	if err != nil {
+		log.Println("Error fetching media", err)
+		return interactions.Content{}, false
+	}
+	defer res.Body.Close()
+
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		log.Println("Error reading media", err)
+		return interactions.Content{}, false
+	}
+
+	if contentType == "" {
+		contentType = res.Header.Get("Content-Type")
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		log.Println("Error parsing media type", err)
+		return interactions.Content{}, false
+	}
+	return mediaContent(mediaType, data)
+}
+
+func mediaContent(mediaType string, data []byte) (interactions.Content, bool) {
+	if imageType := interactions.ImageContentMimeType(mediaType); imageType.IsExact() {
+		return interactions.NewContent(interactions.ImageContent{Data: encode(data), MimeType: &imageType}), true
+	}
+	if audioType := interactions.AudioContentMimeType(mediaType); audioType.IsExact() {
+		return interactions.NewContent(interactions.AudioContent{Data: encode(data), MimeType: &audioType}), true
+	}
+	if videoType := interactions.VideoContentMimeType(mediaType); videoType.IsExact() {
+		return interactions.NewContent(interactions.VideoContent{Data: encode(data), MimeType: &videoType}), true
+	}
+	if documentType := interactions.DocumentContentMimeType(mediaType); documentType.IsExact() {
+		return interactions.NewContent(interactions.DocumentContent{Data: encode(data), MimeType: &documentType}), true
+	}
+	if strings.HasPrefix(mediaType, "text/") {
+		return textContent(string(data)), true
+	}
+	log.Printf("Skipping media with unsupported type %q", mediaType)
+	return interactions.Content{}, false
+}
+
+func encode(data []byte) *string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return &encoded
 }
 
 func displayName(m *discordgo.Message) string {
@@ -197,37 +293,37 @@ func displayName(m *discordgo.Message) string {
 	return m.Author.Username
 }
 
-func appendHistory(channelID, msgID, entry string) {
+func appendHistory(channelID, msgID string, contents []interactions.Content) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, content: entry})
+	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, contents: contents})
 	if n := len(history[channelID]); n > maxHistoryEntries {
 		history[channelID] = history[channelID][n-maxHistoryEntries:]
 	}
 }
 
-func updateHistory(channelID, msgID, entry string) {
+func updateHistory(channelID, msgID string, contents []interactions.Content) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	for i := range history[channelID] {
 		if history[channelID][i].msgID == msgID {
-			history[channelID][i].content = entry
+			history[channelID][i].contents = contents
 			return
 		}
 	}
 }
 
-func channelHistory(channelID string) string {
+func channelHistory(channelID string) []interactions.Content {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	entries := make([]string, len(history[channelID]))
-	for i, e := range history[channelID] {
-		entries[i] = e.content
+	var all []interactions.Content
+	for _, e := range history[channelID] {
+		all = append(all, e.contents...)
 	}
-	return strings.Join(entries, "\n\n")
+	return all
 }
 
-func streamResponse(ctx context.Context, s *discordgo.Session, input string, answer msgRef, threadID string) (string, error) {
+func streamResponse(ctx context.Context, s *discordgo.Session, input []interactions.Content, answer msgRef, threadID string) (string, []interactions.Content, error) {
 	body := operations.NewCreateInteractionRequestBody(interactions.CreateModelInteraction{
 		Model:             interactions.Model(geminiModel),
 		Input:             genai.Ptr(interactions.NewInteractionsInput(input)),
@@ -241,7 +337,7 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input string, ans
 
 	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	stream := res.InteractionSSEStreamEvent
 	defer stream.Close()
@@ -250,6 +346,7 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input string, ans
 		thought             strings.Builder
 		currentThoughtIndex = -1
 		text                strings.Builder
+		outputs             []interactions.Content
 		lastEdit            = time.Now()
 		lastTextLen         int
 	)
@@ -271,18 +368,29 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input string, ans
 				}
 			}
 		}
+		if completed := event.GetDataInteractionCompleted(); completed != nil {
+			outputs = outputContents(completed.Interaction.Steps)
+		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return text.String(), errors.New(*msg)
+				return text.String(), outputs, errors.New(*msg)
 			}
-			return text.String(), errors.New("Stream errored")
+			return text.String(), outputs, errors.New("Stream errored")
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
 			editMessage(s, answer, thinkingSubtext, text.String())
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	return text.String(), stream.Err()
+	return text.String(), outputs, stream.Err()
+}
+
+func outputContents(steps []interactions.Step) []interactions.Content {
+	var outputs []interactions.Content
+	for _, step := range steps {
+		outputs = append(outputs, step.ModelOutputStep.GetContent()...)
+	}
+	return outputs
 }
 
 func sendThought(s *discordgo.Session, threadID string, thought *strings.Builder) {
