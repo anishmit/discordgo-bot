@@ -100,11 +100,9 @@ var geminiFunctions = []interactions.Function{
 	{
 		Name: genai.Ptr("first_msgs"),
 		Description: genai.Ptr(`Gets information about winning "first messages" by making a SELECT SQL query to the database.
-The data is stored in a single table called first_messages.
-Every row represents the winning "first message" sent on a specific calendar day.
-There is strictly one row per day.
+The data is stored in a single table called first_messages, where each row represents the winning "first message" sent on a specific calendar day.
 Available columns:
-1. iso_date (date): The exact calendar date the message was sent, formatted as YYYY-MM-DD (e.g., '2018-01-28'). This is the primary key.
+1. iso_date (date): The exact calendar date the message was sent, formatted as YYYY-MM-DD. This is the primary key.
 2. content (text): The actual text content of the message.
 3. timestamp_ms (bigint): The exact time the message was sent, recorded as a Unix millisecond number.
 4. message_id (bigint): Discord's ID for the specific message.
@@ -119,8 +117,8 @@ Available columns:
 		Name: genai.Ptr("search_messages_sql"),
 		Description: genai.Ptr(`Searches the channel message history by making a SELECT SQL query to the database.
 The data is stored in a single table called messages, where each row is one message that was sent in the channel.
-The full history of the channel is stored, going back to 2018, and there are MILLIONS of rows.
-Because the table is so large, you MUST always narrow your queries: filter with a WHERE clause and/or include a LIMIT (e.g. LIMIT 50) so you don't pull back huge result sets. 
+There are MILLIONS of rows, so you must always narrow your queries: filter with a WHERE clause and/or include a LIMIT.
+Only use this function when you need to look back on messages outside of your provided chat log.
 Available columns:
 1. message_id (bigint): Discord's ID for the specific message. This is the primary key.
 2. user_id (bigint): Discord's ID for the user who sent the message.
@@ -133,21 +131,24 @@ Available columns:
 	{
 		Name: genai.Ptr("search_messages_semantic"),
 		Description: genai.Ptr(`Searches the channel message history by meaning using vector embeddings.
-Use this when the user describes a conversation, topic, or idea in their own words and you want messages that are semantically related even if they don't share the same keywords (e.g. "that argument about whether tabs or spaces are better", "when people discussed moving to a new game"). 
-For exact keyword or structured lookups, prefer the "search_messages_sql" tool instead.
-Messages are grouped into conversation chunks (consecutive messages within a 30-minute window). Each result is one chunk and includes its formatted text, the time range, and the participant user IDs.
-Each line within a chunk's text is formatted as "[YYYY-MM-DD HH:MM] <@user_id>: content" with timestamps in UTC.`),
+Use this when you need messages that match by meaning rather than keywords. For exact keyword lookups, use the "search_messages_sql" tool instead.
+Messages are grouped into conversation chunks (consecutive messages within a 30-minute window). 
+Each result is one chunk and includes the text, the time range, and the participant user IDs.
+Each line within a chunk's text is formatted as "[YYYY-MM-DD HH:MM] <@user_id>: content" with timestamps in UTC.
+Only use this function when you need to look back on messages outside of your provided chat log.`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
 			"query":    stringSchema("Natural-language description of what to search for"),
-			"limit":    intSchema("If set, the maximum number of chunks to return; defaults to 10"),
+			"limit":    intSchema("The maximum number of chunks to return (defaults to 10)"),
 			"user_id":  stringSchema("If set, only return chunks that this Discord user ID participated in"),
 			"start_ms": intSchema("If set, only return chunks whose conversation ended at or after this Unix millisecond time"),
 			"end_ms":   intSchema("If set, only return chunks whose conversation started at or before this Unix millisecond time"),
 		}),
 	},
 	{
-		Name:        genai.Ptr("get_user"),
-		Description: genai.Ptr(`Looks up a Discord user's account details by their user ID. Returns the user's username, global display name (may be empty), and whether the account is a bot. If the user sent the message from a server, it also returns when they joined and their server nickname (if they have one).`),
+		Name: genai.Ptr("get_user"),
+		Description: genai.Ptr(`Looks up a Discord user by their ID.
+It returns the user's username, global display name (if they have one), and whether the account is a bot. 
+If the user sent the message from a server, it also returns when they joined and their server nickname (if they have one).`),
 		Parameters: objectSchema([]string{"user_id"}, map[string]any{
 			"user_id": stringSchema("Discord user ID to look up"),
 		}),
@@ -455,6 +456,7 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		}
 		steps = append(steps, responseSteps...)
 		for _, call := range calls {
+			log.Printf("Calling function %s", call.Name)
 			steps = append(steps, interactions.NewStep(functionResult(ctx, s, guildID, call)))
 		}
 	}
@@ -864,7 +866,7 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 	default:
 		edit.Content = &subtext
 		edit.Embeds = &[]*discordgo.MessageEmbed{{
-			Description: truncate(text, maxEmbedLength),
+			Description: text,
 			Color:       embedColor,
 		}}
 	}
