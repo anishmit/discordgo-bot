@@ -659,8 +659,13 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input []interacti
 				}
 			}
 		}
+		if stepStart := event.GetDataStepStart(); stepStart != nil {
+			returned = append(returned, stepStart.Step)
+		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
-			returned = completed.Interaction.Steps
+			if len(completed.Interaction.Steps) > 0 {
+				returned = completed.Interaction.Steps
+			}
 			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
 				totalTokens = *tokens
 			}
