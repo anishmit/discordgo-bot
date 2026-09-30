@@ -18,6 +18,8 @@ import (
 const (
 	geminiModel          = "gemini-3.8-flash"
 	maxMsgLength         = 2000
+	maxEmbedLength       = 4096
+	embedColor           = 0xffffff
 	streamEditInterval   = 2 * time.Second
 	thoughtsThreadName   = "Thoughts"
 	threadArchiveMinutes = 1440
@@ -70,16 +72,14 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	answer := msgRef{channelID: m.ChannelID, messageID: msg.ID}
 
-	var thought msgRef
+	var threadID string
 	if thread, err := s.MessageThreadStart(m.ChannelID, msg.ID, thoughtsThreadName, threadArchiveMinutes); err != nil {
 		log.Println("Error starting thoughts thread", err)
-	} else if thoughtMsg, err := s.ChannelMessageSend(thread.ID, "..."); err != nil {
-		log.Println("Error sending thoughts message", err)
 	} else {
-		thought = msgRef{channelID: thread.ID, messageID: thoughtMsg.ID}
+		threadID = thread.ID
 	}
 
-	text, thoughts, err := streamResponse(context.Background(), s, prompt, answer, thought)
+	text, err := streamResponse(context.Background(), s, prompt, answer, threadID)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, err.Error())
@@ -88,11 +88,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if text == "" {
 		text = "Empty response"
 	}
-	if thoughts == "" {
-		thoughts = "No thoughts"
-	}
-	editMessage(s, answer, cappedMsg(text))
-	editMessage(s, thought, cappedMsg(thoughts))
+	editMessage(s, answer, text)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -104,7 +100,7 @@ func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
 	return false
 }
 
-func streamResponse(ctx context.Context, s *discordgo.Session, prompt string, answer, thought msgRef) (string, string, error) {
+func streamResponse(ctx context.Context, s *discordgo.Session, prompt string, answer msgRef, threadID string) (string, error) {
 	body := operations.NewCreateInteractionRequestBody(interactions.CreateModelInteraction{
 		Model:          interactions.Model(geminiModel),
 		Input:          genai.Ptr(interactions.NewInteractionsInput(prompt)),
@@ -117,18 +113,20 @@ func streamResponse(ctx context.Context, s *discordgo.Session, prompt string, an
 
 	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	stream := res.InteractionSSEStreamEvent
 	defer stream.Close()
 
 	var (
-		thoughts        strings.Builder
-		text            strings.Builder
-		lastEdit        = time.Now()
-		lastTextLen     int
-		lastThoughtsLen int
+		thought             strings.Builder
+		currentThoughtIndex = -1
+		text                strings.Builder
+		lastEdit            = time.Now()
+		lastTextLen         int
 	)
+	defer sendThought(s, threadID, &thought)
+
 	for stream.Next() {
 		event := stream.Value()
 		if stepDelta := event.GetDataStepDelta(); stepDelta != nil {
@@ -137,45 +135,61 @@ func streamResponse(ctx context.Context, s *discordgo.Session, prompt string, an
 			}
 			if thoughtDelta := stepDelta.GetDeltaThoughtSummary(); thoughtDelta != nil {
 				if content := thoughtDelta.GetContentText(); content != nil {
-					thoughts.WriteString(content.GetText())
+					if stepDelta.GetIndex() != currentThoughtIndex {
+						sendThought(s, threadID, &thought)
+						currentThoughtIndex = stepDelta.GetIndex()
+					}
+					thought.WriteString(content.GetText())
 				}
 			}
 		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return text.String(), thoughts.String(), errors.New(*msg)
+				return text.String(), errors.New(*msg)
 			}
-			return text.String(), thoughts.String(), errors.New("Stream errored")
+			return text.String(), errors.New("Stream errored")
 		}
-		if time.Since(lastEdit) >= streamEditInterval {
-			if text.Len() != lastTextLen {
-				editMessage(s, answer, cappedMsg(text.String()))
-				lastTextLen = text.Len()
-			}
-			if thoughts.Len() != lastThoughtsLen {
-				editMessage(s, thought, cappedMsg(thoughts.String()))
-				lastThoughtsLen = thoughts.Len()
-			}
-			lastEdit = time.Now()
+		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
+			editMessage(s, answer, text.String())
+			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	return text.String(), thoughts.String(), stream.Err()
+	return text.String(), stream.Err()
 }
 
-func cappedMsg(text string) string {
-	return text[:min(len(text), maxMsgLength)]
+func sendThought(s *discordgo.Session, threadID string, thought *strings.Builder) {
+	if threadID == "" || thought.Len() == 0 {
+		return
+	}
+	if _, err := s.ChannelMessageSend(threadID, capped(thought.String(), maxMsgLength)); err != nil {
+		log.Println("Error sending thought", err)
+	}
+	thought.Reset()
+}
+
+func capped(text string, limit int) string {
+	return text[:min(len(text), limit)]
 }
 
 func editMessage(s *discordgo.Session, ref msgRef, content string) {
 	if ref.messageID == "" {
 		return
 	}
-	if _, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+	edit := &discordgo.MessageEdit{
 		Content:         &content,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 		ID:              ref.messageID,
 		Channel:         ref.channelID,
-	}); err != nil {
+	}
+	if len(content) > maxMsgLength {
+		empty := ""
+		edit.Content = &empty
+		edit.Embeds = &[]*discordgo.MessageEmbed{{
+			Description: capped(content, maxEmbedLength),
+			Color:       embedColor,
+		}}
+	}
+	if _, err := s.ChannelMessageEditComplex(edit); err != nil {
 		log.Println("Error editing message", err)
 	}
 }
