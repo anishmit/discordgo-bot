@@ -170,7 +170,12 @@ func editMessage(s *discordgo.Session, ref msgRef, content string) {
 	if ref.messageID == "" {
 		return
 	}
-	if _, err := s.ChannelMessageEdit(ref.channelID, ref.messageID, content); err != nil {
+	if _, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Content:         &content,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+		ID:              ref.messageID,
+		Channel:         ref.channelID,
+	}); err != nil {
 		log.Println("Error editing message", err)
 	}
 }
