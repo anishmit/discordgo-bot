@@ -96,6 +96,11 @@ var globalCommands = []*discordgo.ApplicationCommand{
 					},
 					{
 						Type:        discordgo.ApplicationCommandOptionSubCommand,
+						Name:        "url-context",
+						Description: "Toggle URL context",
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionSubCommand,
 						Name:        "model",
 						Description: "Change model",
 						Options: []*discordgo.ApplicationCommandOption{
@@ -121,10 +126,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 										Name:  "Gemini 3 Flash",
 										Value: "gemini-3-flash-preview",
 									},
-									{
-										Name:  "Gemini 3.1 Flash Image",
-										Value: "gemini-3.1-flash-image",
-									},
 								},
 							},
 						},
@@ -140,6 +141,10 @@ var globalCommands = []*discordgo.ApplicationCommand{
 								Description: "Model name",
 								Required:    true,
 								Choices: []*discordgo.ApplicationCommandOptionChoice{
+									{
+										Name:  "Default",
+										Value: "DEFAULT",
+									},
 									{
 										Name:  "Minimal",
 										Value: "MINIMAL",
