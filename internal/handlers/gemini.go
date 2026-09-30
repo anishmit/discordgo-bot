@@ -37,8 +37,6 @@ import (
 
 const (
 	defaultModel         = "gemini-3.8-flash"
-	defaultAspectRatio   = "16:9"
-	defaultImageSize     = "1K"
 	maxMsgLength         = 2000
 	maxEmbedLength       = 4096
 	embedColor           = 0xffffff
@@ -56,7 +54,7 @@ var models = map[string][]interactions.ThinkingLevel{
 	"gemini-3-flash-preview": {interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh},
 }
 
-var markdown = goldmark.New(
+var markdownRenderer = goldmark.New(
 	goldmark.WithExtensions(
 		extension.GFM,
 		highlighting.NewHighlighting(
@@ -114,7 +112,7 @@ Available columns:
 6. user_id (bigint): Discord's ID for the user who sent the message.
 7. speed (bigint): The reaction time, recorded in milliseconds, representing how quickly the user sent the message after the new day officially began.`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query": stringProp("SELECT SQL query to make to the database"),
+			"query": stringSchema("SELECT SQL query to make to the database"),
 		}),
 	},
 	{
@@ -129,7 +127,7 @@ Available columns:
 3. timestamp_ms (bigint): The exact time the message was sent, recorded as a Unix millisecond number.
 4. content (text): The actual text content of the message. May be empty (e.g. for messages that only had attachments). To search for a word or phrase, filter with "content ILIKE '%word%'"; a trigram index backs this column, so case-insensitive substring matches stay fast even across millions of rows.`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query": stringProp("SELECT SQL query to make to the database"),
+			"query": stringSchema("SELECT SQL query to make to the database"),
 		}),
 	},
 	{
@@ -140,18 +138,18 @@ For exact keyword or structured lookups, prefer the "search_messages_sql" tool i
 Messages are grouped into conversation chunks (consecutive messages within a 30-minute window). Each result is one chunk and includes its formatted text, the time range, and the participant user IDs.
 Each line within a chunk's text is formatted as "[YYYY-MM-DD HH:MM] <@user_id>: content" with timestamps in UTC.`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query":    stringProp("Natural-language description of what to search for"),
-			"limit":    intProp("If set, the maximum number of chunks to return; defaults to 10"),
-			"user_id":  stringProp("If set, only return chunks that this Discord user ID participated in"),
-			"start_ms": intProp("If set, only return chunks whose conversation ended at or after this Unix millisecond time"),
-			"end_ms":   intProp("If set, only return chunks whose conversation started at or before this Unix millisecond time"),
+			"query":    stringSchema("Natural-language description of what to search for"),
+			"limit":    intSchema("If set, the maximum number of chunks to return; defaults to 10"),
+			"user_id":  stringSchema("If set, only return chunks that this Discord user ID participated in"),
+			"start_ms": intSchema("If set, only return chunks whose conversation ended at or after this Unix millisecond time"),
+			"end_ms":   intSchema("If set, only return chunks whose conversation started at or before this Unix millisecond time"),
 		}),
 	},
 	{
 		Name:        genai.Ptr("get_user"),
 		Description: genai.Ptr(`Looks up a Discord user's account details by their user ID. Returns the user's username, global display name (may be empty), and whether the account is a bot. If the user sent the message from a server, it also returns when they joined and their server nickname (if they have one).`),
 		Parameters: objectSchema([]string{"user_id"}, map[string]any{
-			"user_id": stringProp("Discord user ID to look up"),
+			"user_id": stringSchema("Discord user ID to look up"),
 		}),
 	},
 }
@@ -160,11 +158,11 @@ func objectSchema(required []string, properties map[string]any) map[string]any {
 	return map[string]any{"type": "object", "properties": properties, "required": required}
 }
 
-func stringProp(description string) map[string]any {
+func stringSchema(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
-func intProp(description string) map[string]any {
+func intSchema(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 
@@ -198,8 +196,6 @@ type userSettings struct {
 	markdown      bool
 	model         string
 	thinkingLevel interactions.ThinkingLevel
-	aspectRatio   string
-	imageSize     string
 }
 
 var (
@@ -264,7 +260,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		threadID = thread.ID
 	}
 
-	text, outputs, totalTokens, err := generate(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
+	text, outputs, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
@@ -300,11 +296,16 @@ func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions
 	if err != nil {
 		return nil, err
 	}
+	timestamp, err := discordgo.SnowflakeTimestamp(m.ID)
+	if err != nil {
+		timestamp = time.Now()
+	}
 
-	var media []interactions.Content
+	contents := []interactions.Content{textContent(fmt.Sprintf("timestamp: %s\nauthor: %s (%s)\ncontent: %s",
+		timestamp.In(timeZone).Format(time.RFC3339Nano), displayName(m), m.Author.ID, text))}
 	for _, att := range m.Attachments {
 		if content, ok := fetchMedia(att.URL, att.ContentType); ok {
-			media = append(media, content)
+			contents = append(contents, content)
 		}
 	}
 	for _, embed := range m.Embeds {
@@ -313,23 +314,10 @@ func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions
 			continue
 		}
 		if content, ok := fetchMedia(url, ""); ok {
-			media = append(media, content)
+			contents = append(contents, content)
 		}
 	}
-	return entryContents(m.ID, displayName(m), m.Author.ID, text, media), nil
-}
-
-func entryContents(msgID, author, authorID, text string, media []interactions.Content) []interactions.Content {
-	timestamp, err := discordgo.SnowflakeTimestamp(msgID)
-	if err != nil {
-		timestamp = time.Now()
-	}
-	header := fmt.Sprintf("timestamp: %s\nauthor: %s (%s)\ncontent: %s",
-		timestamp.In(timeZone).Format(time.RFC3339Nano), author, authorID, text)
-
-	contents := []interactions.Content{textContent(header)}
-	contents = append(contents, media...)
-	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
+	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter))), nil
 }
 
 func textContent(text string) interactions.Content {
@@ -381,16 +369,16 @@ func fetchMedia(url, contentType string) (interactions.Content, bool) {
 
 func mediaContent(mediaType string, data []byte) (interactions.Content, bool) {
 	if imageType := interactions.ImageContentMimeType(mediaType); imageType.IsExact() {
-		return interactions.NewContent(interactions.ImageContent{Data: encode(data), MimeType: &imageType}), true
+		return interactions.NewContent(interactions.ImageContent{Data: base64Pointer(data), MimeType: &imageType}), true
 	}
 	if audioType := interactions.AudioContentMimeType(mediaType); audioType.IsExact() {
-		return interactions.NewContent(interactions.AudioContent{Data: encode(data), MimeType: &audioType}), true
+		return interactions.NewContent(interactions.AudioContent{Data: base64Pointer(data), MimeType: &audioType}), true
 	}
 	if videoType := interactions.VideoContentMimeType(mediaType); videoType.IsExact() {
-		return interactions.NewContent(interactions.VideoContent{Data: encode(data), MimeType: &videoType}), true
+		return interactions.NewContent(interactions.VideoContent{Data: base64Pointer(data), MimeType: &videoType}), true
 	}
 	if documentType := interactions.DocumentContentMimeType(mediaType); documentType.IsExact() {
-		return interactions.NewContent(interactions.DocumentContent{Data: encode(data), MimeType: &documentType}), true
+		return interactions.NewContent(interactions.DocumentContent{Data: base64Pointer(data), MimeType: &documentType}), true
 	}
 	if strings.HasPrefix(mediaType, "text/") {
 		return textContent(string(data)), true
@@ -399,7 +387,7 @@ func mediaContent(mediaType string, data []byte) (interactions.Content, bool) {
 	return interactions.Content{}, false
 }
 
-func encode(data []byte) *string {
+func base64Pointer(data []byte) *string {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	return &encoded
 }
@@ -450,27 +438,22 @@ func channelHistory(channelID string) []interactions.Content {
 	return all
 }
 
-func generate(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Content, int, error) {
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Content, int, error) {
 	steps := []interactions.Step{
 		interactions.NewStep(interactions.UserInputStep{Content: channelHistory(channelID)}),
 	}
 	var totalTokens int
 	for {
-		text, returned, tokens, err := streamResponse(ctx, s, steps, answer, threadID, us)
-		totalTokens += tokens
+		text, responseSteps, tokens, err := streamInteraction(ctx, s, steps, answer, threadID, us)
+		totalTokens = tokens
 		if err != nil {
 			return text, nil, totalTokens, err
 		}
-		calls := functionCalls(returned)
-		stepTypes := make([]string, len(returned))
-		for i, step := range returned {
-			stepTypes[i] = string(step.Type)
-		}
-		log.Printf("gemini: textLen=%d tokens=%d steps=%d calls=%d types=%v", len(text), tokens, len(returned), len(calls), stepTypes)
+		calls := functionCalls(responseSteps)
 		if len(calls) == 0 {
-			return text, outputContents(returned), totalTokens, nil
+			return text, outputContents(responseSteps), totalTokens, nil
 		}
-		steps = append(steps, returned...)
+		steps = append(steps, responseSteps...)
 		for _, call := range calls {
 			steps = append(steps, interactions.NewStep(functionResult(ctx, s, guildID, call)))
 		}
@@ -614,13 +597,13 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 	}
 	return results, nil
 }
-func streamResponse(ctx context.Context, s *discordgo.Session, input []interactions.Step, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
+func streamInteraction(ctx context.Context, s *discordgo.Session, input []interactions.Step, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
 	body := operations.NewCreateInteractionRequestBody(interactions.CreateModelInteraction{
 		Model:             interactions.Model(us.model),
 		Input:             genai.Ptr(interactions.NewInteractionsInput(input)),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
-		Tools:             toolsFor(us),
+		Tools:             enabledTools(us),
 		Stream:            genai.Ptr(true),
 		GenerationConfig:  generationConfig(us),
 	})
@@ -636,7 +619,7 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input []interacti
 		thought             strings.Builder
 		currentThoughtIndex = -1
 		text                strings.Builder
-		returned            []interactions.Step
+		responseSteps       []interactions.Step
 		totalTokens         int
 		lastEdit            = time.Now()
 		lastTextLen         int
@@ -660,11 +643,11 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input []interacti
 			}
 		}
 		if stepStart := event.GetDataStepStart(); stepStart != nil {
-			returned = append(returned, stepStart.Step)
+			responseSteps = append(responseSteps, stepStart.Step)
 		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
 			if len(completed.Interaction.Steps) > 0 {
-				returned = completed.Interaction.Steps
+				responseSteps = completed.Interaction.Steps
 			}
 			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
 				totalTokens = *tokens
@@ -672,25 +655,23 @@ func streamResponse(ctx context.Context, s *discordgo.Session, input []interacti
 		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return text.String(), returned, totalTokens, errors.New(*msg)
+				return text.String(), responseSteps, totalTokens, errors.New(*msg)
 			}
-			return text.String(), returned, totalTokens, errors.New("Stream errored")
+			return text.String(), responseSteps, totalTokens, errors.New("Stream errored")
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
 			editMessage(s, answer, thinkingSubtext(us), text.String(), shouldRender(us, text.String()))
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	return text.String(), returned, totalTokens, stream.Err()
+	return text.String(), responseSteps, totalTokens, stream.Err()
 }
 
 func defaultUserSettings() *userSettings {
 	return &userSettings{
-		search:      true,
-		urlContext:  true,
-		model:       defaultModel,
-		aspectRatio: defaultAspectRatio,
-		imageSize:   defaultImageSize,
+		search:     true,
+		urlContext: true,
+		model:      defaultModel,
 	}
 }
 
@@ -704,7 +685,7 @@ func userSettingsFor(channelID, userID string) *userSettings {
 	return settings[channelID][userID]
 }
 
-func toolsFor(us userSettings) []interactions.Tool {
+func enabledTools(us userSettings) []interactions.Tool {
 	var tools []interactions.Tool
 	for _, function := range geminiFunctions {
 		tools = append(tools, interactions.NewTool(function))
@@ -766,14 +747,8 @@ func applySetting(channelID, userID string, topOption *discordgo.ApplicationComm
 		return toggle(&us.markdown, "markdown rendering for every response")
 	case "model":
 		return setModel(us, option.Options[0].StringValue())
-	case "thinking":
-		return setThinkingLevel(us, option.Options[0].StringValue())
-	case "aspect-ratio":
-		us.aspectRatio = option.Options[0].StringValue()
-		return fmt.Sprintf("Changed aspect ratio to `%s`", us.aspectRatio)
 	default:
-		us.imageSize = option.Options[0].StringValue()
-		return fmt.Sprintf("Changed image size to `%s`", us.imageSize)
+		return setThinkingLevel(us, option.Options[0].StringValue())
 	}
 }
 
@@ -819,13 +794,13 @@ func sendThought(s *discordgo.Session, threadID string, thought *strings.Builder
 	if threadID == "" || thought.Len() == 0 {
 		return
 	}
-	if _, err := s.ChannelMessageSend(threadID, capped(thought.String(), maxMsgLength)); err != nil {
+	if _, err := s.ChannelMessageSend(threadID, truncate(thought.String(), maxMsgLength)); err != nil {
 		log.Println("Error sending thought", err)
 	}
 	thought.Reset()
 }
 
-func capped(text string, limit int) string {
+func truncate(text string, limit int) string {
 	return text[:min(len(text), limit)]
 }
 
@@ -875,15 +850,11 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 		png, err := renderMarkdown(text)
 		if err != nil {
 			log.Println("Error rendering markdown", err)
-			failed := subtext + "\n" + err.Error()
-			edit.Content = &failed
+			errorContent := subtext + "\n" + err.Error()
+			edit.Content = &errorContent
 			break
 		}
 		edit.Content = &subtext
-		edit.Attachments = &[]*discordgo.MessageAttachment{
-			{ID: "0", Filename: "response.png"},
-			{ID: "1", Filename: "response.md"},
-		}
 		edit.Files = []*discordgo.File{
 			{Name: "response.png", ContentType: "image/png", Reader: bytes.NewReader(png)},
 			{Name: "response.md", ContentType: "text/markdown", Reader: strings.NewReader(text)},
@@ -893,7 +864,7 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 	default:
 		edit.Content = &subtext
 		edit.Embeds = &[]*discordgo.MessageEmbed{{
-			Description: capped(text, maxEmbedLength),
+			Description: truncate(text, maxEmbedLength),
 			Color:       embedColor,
 		}}
 	}
@@ -905,7 +876,7 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 
 func renderMarkdown(text string) ([]byte, error) {
 	var htmlBuf bytes.Buffer
-	if err := markdown.Convert([]byte(text), &htmlBuf); err != nil {
+	if err := markdownRenderer.Convert([]byte(text), &htmlBuf); err != nil {
 		return nil, err
 	}
 
