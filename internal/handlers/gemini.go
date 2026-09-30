@@ -853,6 +853,8 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 	}
 	edit := &discordgo.MessageEdit{
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
+		Embeds:          &[]*discordgo.MessageEmbed{},
+		Attachments:     &[]*discordgo.MessageAttachment{},
 		ID:              ref.messageID,
 		Channel:         ref.channelID,
 	}
@@ -868,7 +870,10 @@ func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render 
 			break
 		}
 		edit.Content = &subtext
-		edit.Attachments = &[]*discordgo.MessageAttachment{}
+		edit.Attachments = &[]*discordgo.MessageAttachment{
+			{ID: "0", Filename: "response.png"},
+			{ID: "1", Filename: "response.md"},
+		}
 		edit.Files = []*discordgo.File{
 			{Name: "response.png", ContentType: "image/png", Reader: bytes.NewReader(png)},
 			{Name: "response.md", ContentType: "text/markdown", Reader: strings.NewReader(text)},
