@@ -462,6 +462,11 @@ func generate(ctx context.Context, s *discordgo.Session, channelID, guildID stri
 			return text, nil, totalTokens, err
 		}
 		calls := functionCalls(returned)
+		stepTypes := make([]string, len(returned))
+		for i, step := range returned {
+			stepTypes[i] = string(step.Type)
+		}
+		log.Printf("gemini: textLen=%d tokens=%d steps=%d calls=%d types=%v", len(text), tokens, len(returned), len(calls), stepTypes)
 		if len(calls) == 0 {
 			return text, outputContents(returned), totalTokens, nil
 		}
