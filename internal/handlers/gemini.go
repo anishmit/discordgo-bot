@@ -186,8 +186,8 @@ type msgRef struct {
 }
 
 type historyEntry struct {
-	msgID    string
-	contents []interactions.Content
+	msgID string
+	steps []interactions.Step
 }
 
 type userSettings struct {
@@ -227,12 +227,12 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	contents, err := messageContents(s, m.Message)
+	userStep, err := messageStep(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	appendHistory(m.ChannelID, m.ID, contents)
+	appendHistory(m.ChannelID, m.ID, userStep)
 
 	if !isBotMentioned(s, m) {
 		return
@@ -261,26 +261,26 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		threadID = thread.ID
 	}
 
-	text, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
+	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
 		return
 	}
 	editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), text, shouldRender(us, text))
-	appendHistory(m.ChannelID, msg.ID, logEntry(msg.ID, s.State.User.Username, s.State.User.ID, text, nil))
+	appendHistory(m.ChannelID, msg.ID, turnSteps)
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID {
 		return
 	}
-	contents, err := messageContents(s, m.Message)
+	userStep, err := messageStep(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	updateHistory(m.ChannelID, m.ID, contents)
+	updateHistory(m.ChannelID, m.ID, userStep)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -303,7 +303,7 @@ func logEntry(msgID, author, authorID, text string, media []interactions.Content
 	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
 }
 
-func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions.Content, error) {
+func messageStep(s *discordgo.Session, m *discordgo.Message) ([]interactions.Step, error) {
 	text, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
 		return nil, err
@@ -324,7 +324,8 @@ func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions
 			media = append(media, content)
 		}
 	}
-	return logEntry(m.ID, displayName(m), m.Author.ID, text, media), nil
+	contents := logEntry(m.ID, displayName(m), m.Author.ID, text, media)
+	return []interactions.Step{interactions.NewStep(interactions.UserInputStep{Content: contents})}, nil
 }
 
 func textContent(text string) interactions.Content {
@@ -409,21 +410,21 @@ func displayName(m *discordgo.Message) string {
 	return m.Author.Username
 }
 
-func appendHistory(channelID, msgID string, contents []interactions.Content) {
+func appendHistory(channelID, msgID string, steps []interactions.Step) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, contents: contents})
+	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, steps: steps})
 	if n := len(history[channelID]); n > maxHistoryEntries {
 		history[channelID] = history[channelID][n-maxHistoryEntries:]
 	}
 }
 
-func updateHistory(channelID, msgID string, contents []interactions.Content) {
+func updateHistory(channelID, msgID string, steps []interactions.Step) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	for i := range history[channelID] {
 		if history[channelID][i].msgID == msgID {
-			history[channelID][i].contents = contents
+			history[channelID][i].steps = steps
 			return
 		}
 	}
@@ -435,17 +436,17 @@ func clearHistory(channelID string) {
 	delete(history, channelID)
 }
 
-func channelHistory(channelID string) []interactions.Content {
+func channelHistory(channelID string) []interactions.Step {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	var all []interactions.Content
+	var all []interactions.Step
 	for _, e := range history[channelID] {
-		all = append(all, e.contents...)
+		all = append(all, e.steps...)
 	}
 	return all
 }
 
-func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, int, error) {
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
 		Model:             interactions.Model(us.model),
 		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
@@ -457,28 +458,37 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		GenerationConfig:  generationConfig(us),
 	}
 
+	var turnSteps []interactions.Step
 	var totalTokens int
 	for {
 		interactionID, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
 		totalTokens = tokens
 		if err != nil {
-			return "", totalTokens, err
+			return "", turnSteps, totalTokens, err
 		}
 
 		interaction, err := finishedInteraction(ctx, interactionID)
 		if err != nil {
-			return "", totalTokens, err
+			return "", turnSteps, totalTokens, err
 		}
 		steps := interaction.GetSteps()
+		for _, step := range steps {
+			if step.FunctionResultStep == nil {
+				turnSteps = append(turnSteps, step)
+			}
+		}
+
 		calls := functionCalls(steps)
 		if len(calls) == 0 {
-			return outputText(steps), totalTokens, nil
+			return outputText(steps), turnSteps, totalTokens, nil
 		}
 
 		results := make([]interactions.Step, 0, len(calls))
 		for _, call := range calls {
 			log.Printf("Calling function %s", call.Name)
-			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
+			result := interactions.NewStep(functionResult(ctx, s, guildID, call))
+			results = append(results, result)
+			turnSteps = append(turnSteps, result)
 		}
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
