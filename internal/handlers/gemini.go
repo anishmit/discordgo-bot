@@ -475,6 +475,7 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 			log.Printf("Calling function %s", call.Name)
 			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, &call)))
 		}
+		log.Printf("continuing from %s with %d result step(s)", interactionID, len(results))
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
 	}
@@ -482,6 +483,7 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 
 func functionResult(ctx context.Context, s *discordgo.Session, guildID string, call *interactions.FunctionCallStep) interactions.FunctionResultStep {
 	output, isError := dispatchTool(ctx, s, guildID, call)
+	log.Printf("function %s result (isError=%t) callID=%s: %s", call.Name, isError, call.ID, truncate(output, 500))
 	return interactions.FunctionResultStep{
 		CallID:  call.ID,
 		Name:    genai.Ptr(call.Name),
@@ -652,9 +654,11 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 		}
 		if event.GetDataStepStop() != nil && pendingCall != nil {
 			call := *pendingCall
-			if err := json.Unmarshal([]byte(arguments.String()), &call.Arguments); err != nil {
+			raw := arguments.String()
+			if err := json.Unmarshal([]byte(raw), &call.Arguments); err != nil {
 				log.Println("Error parsing function call arguments", err)
 			}
+			log.Printf("function call %s id=%s rawArgs=%q parsed=%v", call.Name, call.ID, raw, call.Arguments)
 			calls = append(calls, call)
 			pendingCall = nil
 		}
