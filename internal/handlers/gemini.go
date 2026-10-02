@@ -487,7 +487,6 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 
 func functionResult(ctx context.Context, s *discordgo.Session, guildID string, call *interactions.FunctionCallStep) interactions.FunctionResultStep {
 	output, isError := dispatchTool(ctx, s, guildID, call)
-	log.Printf("function %s result (isError=%t) callID=%s: %s", call.Name, isError, call.ID, truncate(output, 500))
 	return interactions.FunctionResultStep{
 		CallID:  call.ID,
 		Name:    genai.Ptr(call.Name),
