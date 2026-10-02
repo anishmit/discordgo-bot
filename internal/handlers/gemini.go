@@ -186,8 +186,8 @@ type msgRef struct {
 }
 
 type historyEntry struct {
-	msgID    string
-	contents []interactions.Content
+	msgID string
+	steps []interactions.Step
 }
 
 type userSettings struct {
@@ -227,12 +227,12 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	contents, err := messageContents(s, m.Message)
+	userStep, err := messageStep(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	appendHistory(m.ChannelID, m.ID, contents)
+	appendHistory(m.ChannelID, m.ID, userStep)
 
 	if !isBotMentioned(s, m) {
 		return
@@ -261,26 +261,26 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		threadID = thread.ID
 	}
 
-	text, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
+	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
 		return
 	}
 	editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), text, shouldRender(us, text))
-	appendHistory(m.ChannelID, msg.ID, logEntry(msg.ID, s.State.User.Username, s.State.User.ID, text, nil))
+	appendHistory(m.ChannelID, msg.ID, turnSteps)
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID {
 		return
 	}
-	contents, err := messageContents(s, m.Message)
+	userStep, err := messageStep(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	updateHistory(m.ChannelID, m.ID, contents)
+	updateHistory(m.ChannelID, m.ID, userStep)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -303,7 +303,7 @@ func logEntry(msgID, author, authorID, text string, media []interactions.Content
 	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
 }
 
-func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions.Content, error) {
+func messageStep(s *discordgo.Session, m *discordgo.Message) ([]interactions.Step, error) {
 	text, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
 		return nil, err
@@ -324,7 +324,8 @@ func messageContents(s *discordgo.Session, m *discordgo.Message) ([]interactions
 			media = append(media, content)
 		}
 	}
-	return logEntry(m.ID, displayName(m), m.Author.ID, text, media), nil
+	contents := logEntry(m.ID, displayName(m), m.Author.ID, text, media)
+	return []interactions.Step{interactions.NewStep(interactions.UserInputStep{Content: contents})}, nil
 }
 
 func textContent(text string) interactions.Content {
@@ -409,21 +410,21 @@ func displayName(m *discordgo.Message) string {
 	return m.Author.Username
 }
 
-func appendHistory(channelID, msgID string, contents []interactions.Content) {
+func appendHistory(channelID, msgID string, steps []interactions.Step) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, contents: contents})
+	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, steps: steps})
 	if n := len(history[channelID]); n > maxHistoryEntries {
 		history[channelID] = history[channelID][n-maxHistoryEntries:]
 	}
 }
 
-func updateHistory(channelID, msgID string, contents []interactions.Content) {
+func updateHistory(channelID, msgID string, steps []interactions.Step) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	for i := range history[channelID] {
 		if history[channelID][i].msgID == msgID {
-			history[channelID][i].contents = contents
+			history[channelID][i].steps = steps
 			return
 		}
 	}
@@ -435,47 +436,57 @@ func clearHistory(channelID string) {
 	delete(history, channelID)
 }
 
-func channelHistory(channelID string) []interactions.Content {
+func channelHistory(channelID string) []interactions.Step {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	var all []interactions.Content
+	var all []interactions.Step
 	for _, e := range history[channelID] {
-		all = append(all, e.contents...)
+		all = append(all, e.steps...)
 	}
 	return all
 }
 
-func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, int, error) {
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
 		Model:             interactions.Model(us.model),
 		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
 		Tools:             enabledTools(us),
-		Store:             genai.Ptr(true),
 		Stream:            genai.Ptr(true),
 		GenerationConfig:  generationConfig(us),
 	}
 
+	answered := map[string]bool{}
 	var answerText strings.Builder
 	var totalTokens int
 	for {
-		text, calls, interactionID, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
+		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
 		answerText.WriteString(text)
 		totalTokens = tokens
 		if err != nil {
-			return answerText.String(), totalTokens, err
-		}
-		if len(calls) == 0 {
-			return answerText.String(), totalTokens, nil
+			return answerText.String(), nil, totalTokens, err
 		}
 
-		results := make([]interactions.Step, 0, len(calls))
-		for _, call := range calls {
-			log.Printf("Calling function %s", call.Name)
-			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, &call)))
+		steps, err := finishedInteraction(ctx, interactionID)
+		if err != nil {
+			return answerText.String(), nil, totalTokens, err
 		}
-		log.Printf("continuing from %s with %d result step(s)", interactionID, len(results))
+
+		var results []interactions.Step
+		for _, step := range steps {
+			call := step.FunctionCallStep
+			if call == nil || answered[call.ID] {
+				continue
+			}
+			answered[call.ID] = true
+			log.Printf("Calling function %s", call.Name)
+			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
+		}
+		if len(results) == 0 {
+			return answerText.String(), modelSteps(steps), totalTokens, nil
+		}
+
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
 	}
@@ -611,22 +622,19 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 	}
 	return results, nil
 }
-func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, threadID string, us userSettings) (string, []interactions.FunctionCallStep, string, int, error) {
+func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, threadID string, us userSettings) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
 	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
 	if err != nil {
-		return "", nil, "", 0, err
+		return "", "", 0, err
 	}
 	stream := res.InteractionSSEStreamEvent
 	defer stream.Close()
 
 	var (
-		calls         []interactions.FunctionCallStep
-		pendingCall   *interactions.FunctionCallStep
-		arguments     strings.Builder
-		text          strings.Builder
 		interactionID string
+		text          strings.Builder
 		totalTokens   int
 		lastEdit      = time.Now()
 		lastTextLen   int
@@ -635,16 +643,7 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 	for stream.Next() {
 		event := stream.Value()
 
-		if stepStart := event.GetDataStepStart(); stepStart != nil {
-			pendingCall = stepStart.Step.FunctionCallStep
-			arguments.Reset()
-		}
 		if stepDelta := event.GetDataStepDelta(); stepDelta != nil {
-			if argumentsDelta := stepDelta.GetDeltaArgumentsDelta(); argumentsDelta != nil {
-				if fragment := argumentsDelta.GetArguments(); fragment != nil {
-					arguments.WriteString(*fragment)
-				}
-			}
 			if textDelta := stepDelta.GetDeltaText(); textDelta != nil {
 				text.WriteString(textDelta.GetText())
 			}
@@ -654,16 +653,6 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 				}
 			}
 		}
-		if event.GetDataStepStop() != nil && pendingCall != nil {
-			call := *pendingCall
-			raw := arguments.String()
-			if err := json.Unmarshal([]byte(raw), &call.Arguments); err != nil {
-				log.Println("Error parsing function call arguments", err)
-			}
-			log.Printf("function call %s id=%s rawArgs=%q parsed=%v", call.Name, call.ID, raw, call.Arguments)
-			calls = append(calls, call)
-			pendingCall = nil
-		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
 			interactionID = completed.Interaction.ID
 			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
@@ -672,16 +661,34 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return text.String(), calls, interactionID, totalTokens, errors.New(*msg)
+				return "", text.String(), totalTokens, errors.New(*msg)
 			}
-			return text.String(), calls, interactionID, totalTokens, errors.New("Stream errored")
+			return "", text.String(), totalTokens, errors.New("Stream errored")
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
 			editMessage(s, answer, thinkingSubtext(us), text.String(), shouldRender(us, text.String()))
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	return text.String(), calls, interactionID, totalTokens, stream.Err()
+	return interactionID, text.String(), totalTokens, stream.Err()
+}
+
+func finishedInteraction(ctx context.Context, interactionID string) ([]interactions.Step, error) {
+	res, err := clients.InteractionsClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
+	if err != nil {
+		return nil, err
+	}
+	return res.Interaction.GetSteps(), nil
+}
+
+func modelSteps(steps []interactions.Step) []interactions.Step {
+	var kept []interactions.Step
+	for _, step := range steps {
+		if step.UserInputStep == nil {
+			kept = append(kept, step)
+		}
+	}
+	return kept
 }
 
 func defaultUserSettings() *userSettings {
