@@ -469,9 +469,10 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		if err != nil {
 			return "", totalTokens, err
 		}
-		calls := functionCalls(interaction.GetSteps())
+		steps := interaction.GetSteps()
+		calls := functionCalls(steps)
 		if len(calls) == 0 {
-			return stringValue(interaction.GetOutputText()), totalTokens, nil
+			return outputText(steps), totalTokens, nil
 		}
 
 		results := make([]interactions.Step, 0, len(calls))
@@ -673,6 +674,18 @@ func finishedInteraction(ctx context.Context, interactionID string) (*interactio
 	return res.Interaction, nil
 }
 
+func outputText(steps []interactions.Step) string {
+	var text strings.Builder
+	for _, step := range steps {
+		for _, content := range step.ModelOutputStep.GetContent() {
+			if content.TextContent != nil {
+				text.WriteString(content.TextContent.Text)
+			}
+		}
+	}
+	return text.String()
+}
+
 func functionCalls(steps []interactions.Step) []*interactions.FunctionCallStep {
 	var calls []*interactions.FunctionCallStep
 	for _, step := range steps {
@@ -681,13 +694,6 @@ func functionCalls(steps []interactions.Step) []*interactions.FunctionCallStep {
 		}
 	}
 	return calls
-}
-
-func stringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 func defaultUserSettings() *userSettings {
