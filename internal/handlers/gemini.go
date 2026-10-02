@@ -488,7 +488,9 @@ func functionResult(ctx context.Context, s *discordgo.Session, guildID string, c
 		CallID:  call.ID,
 		Name:    genai.Ptr(call.Name),
 		IsError: genai.Ptr(isError),
-		Result:  interactions.NewFunctionResultStepResultUnion(output),
+		Result: interactions.NewFunctionResultStepResultUnion([]interactions.FunctionResultSubcontent{
+			interactions.NewFunctionResultSubcontent(interactions.TextContent{Text: output}),
+		}),
 	}
 }
 
