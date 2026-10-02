@@ -631,7 +631,6 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 	var (
 		builder       stepBuilder
 		responseSteps []interactions.Step
-		thought       strings.Builder
 		text          strings.Builder
 		totalTokens   int
 		lastEdit      = time.Now()
