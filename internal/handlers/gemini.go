@@ -210,8 +210,7 @@ var (
 func loadLocation(name string) *time.Location {
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		log.Println("Error loading location, falling back to UTC", err)
-		return time.UTC
+		log.Fatalln("Error loading location", err)
 	}
 	return loc
 }
@@ -457,8 +456,8 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		GenerationConfig:  generationConfig(us),
 	}
 
-	answered := map[string]bool{}
 	var answerText strings.Builder
+	var turnSteps []interactions.Step
 	var totalTokens int
 	for {
 		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
@@ -472,20 +471,20 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		if err != nil {
 			return answerText.String(), nil, totalTokens, err
 		}
+		generated := generatedSteps(steps)
+		turnSteps = append(turnSteps, generated...)
 
 		var results []interactions.Step
-		for _, step := range steps {
-			call := step.FunctionCallStep
-			if call == nil || answered[call.ID] {
-				continue
+		for _, step := range generated {
+			if call := step.FunctionCallStep; call != nil {
+				log.Printf("Calling function %s", call.Name)
+				results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
 			}
-			answered[call.ID] = true
-			log.Printf("Calling function %s", call.Name)
-			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
 		}
 		if len(results) == 0 {
-			return answerText.String(), modelSteps(steps), totalTokens, nil
+			return answerText.String(), turnSteps, totalTokens, nil
 		}
+		turnSteps = append(turnSteps, results...)
 
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
@@ -653,6 +652,9 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 				}
 			}
 		}
+		if created := event.GetDataInteractionCreated(); created != nil {
+			interactionID = created.Interaction.ID
+		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
 			interactionID = completed.Interaction.ID
 			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
@@ -674,6 +676,9 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 }
 
 func finishedInteraction(ctx context.Context, interactionID string) ([]interactions.Step, error) {
+	if interactionID == "" {
+		return nil, errors.New("Interaction did not create an ID")
+	}
 	res, err := clients.InteractionsClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
 	if err != nil {
 		return nil, err
@@ -681,10 +686,16 @@ func finishedInteraction(ctx context.Context, interactionID string) ([]interacti
 	return res.Interaction.GetSteps(), nil
 }
 
-func modelSteps(steps []interactions.Step) []interactions.Step {
+func generatedSteps(steps []interactions.Step) []interactions.Step {
+	start := 0
+	for i, step := range steps {
+		if step.UserInputStep != nil {
+			start = i + 1
+		}
+	}
 	var kept []interactions.Step
-	for _, step := range steps {
-		if step.UserInputStep == nil {
+	for _, step := range steps[start:] {
+		if step.FunctionResultStep == nil {
 			kept = append(kept, step)
 		}
 	}
