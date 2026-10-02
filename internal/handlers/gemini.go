@@ -473,8 +473,13 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 			return "", turnSteps, totalTokens, err
 		}
 		responseSteps := interaction.GetSteps()
-		steps = append(steps, responseSteps...)
-		turnSteps = append(turnSteps, responseSteps...)
+		for _, step := range responseSteps {
+			if step.FunctionResultStep != nil {
+				continue
+			}
+			steps = append(steps, step)
+			turnSteps = append(turnSteps, step)
+		}
 
 		calls := functionCalls(responseSteps)
 		if len(calls) == 0 {
