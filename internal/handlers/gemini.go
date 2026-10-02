@@ -641,7 +641,7 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 
 		if stepStart := event.GetDataStepStart(); stepStart != nil {
 			log.Printf("step.start idx=%d %s", stepStart.Index, describeStep(stepStart.Step))
-			builder.start(stepStart.Step)
+			builder = stepBuilder{step: stepStart.Step}
 		}
 		if stepDelta := event.GetDataStepDelta(); stepDelta != nil {
 			log.Printf("step.delta idx=%d type=%s", stepDelta.Index, stepDelta.Delta.Type)
@@ -661,7 +661,16 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 			responseSteps = append(responseSteps, finished)
 		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
-			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
+			interaction := completed.Interaction
+			usage := interaction.Usage
+			log.Printf("interaction.completed id=%s status=%s steps=%d usage{total=%d input=%d output=%d thought=%d cached=%d toolUse=%d} byModality{in=%d out=%d} grounding=%d",
+				interaction.ID, interaction.Status, len(interaction.Steps),
+				intValue(usage.GetTotalTokens()), intValue(usage.GetTotalInputTokens()),
+				intValue(usage.GetTotalOutputTokens()), intValue(usage.GetTotalThoughtTokens()),
+				intValue(usage.GetTotalCachedTokens()), intValue(usage.GetTotalToolUseTokens()),
+				len(usage.GetInputTokensByModality()), len(usage.GetOutputTokensByModality()),
+				len(usage.GetGroundingToolCount()))
+			if tokens := usage.GetTotalTokens(); tokens != nil {
 				totalTokens = *tokens
 			}
 		}
@@ -677,6 +686,13 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 		}
 	}
 	return text.String(), responseSteps, totalTokens, stream.Err()
+}
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func describeStep(step interactions.Step) string {
@@ -710,20 +726,6 @@ type stepBuilder struct {
 	text      strings.Builder
 	arguments strings.Builder
 	signature string
-}
-
-func (b *stepBuilder) start(step interactions.Step) {
-	*b = stepBuilder{step: step}
-	if output := step.ModelOutputStep; output != nil {
-		for _, content := range output.Content {
-			if content.TextContent != nil {
-				b.text.WriteString(content.TextContent.Text)
-			}
-		}
-	}
-	if thought := step.ThoughtStep; thought != nil && thought.Signature != nil {
-		b.signature = *thought.Signature
-	}
 }
 
 func (b *stepBuilder) apply(delta *interactions.StepDelta) {
