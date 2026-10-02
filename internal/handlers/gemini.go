@@ -617,7 +617,6 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
 		Tools:             enabledTools(us),
-		Store:             genai.Ptr(true),
 		Stream:            genai.Ptr(true),
 		GenerationConfig:  generationConfig(us),
 	})
@@ -630,58 +629,146 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, input []intera
 	defer stream.Close()
 
 	var (
-		thought             strings.Builder
-		currentThoughtIndex = -1
-		text                strings.Builder
-		interactionID       string
-		totalTokens         int
-		lastEdit            = time.Now()
-		lastTextLen         int
+		builder       stepBuilder
+		responseSteps []interactions.Step
+		thought       strings.Builder
+		text          strings.Builder
+		totalTokens   int
+		lastEdit      = time.Now()
+		lastTextLen   int
 	)
-	defer sendThought(s, threadID, &thought)
-
 	for stream.Next() {
 		event := stream.Value()
+
+		if stepStart := event.GetDataStepStart(); stepStart != nil {
+			log.Printf("step.start idx=%d %s", stepStart.Index, describeStep(stepStart.Step))
+			builder.start(stepStart.Step)
+		}
 		if stepDelta := event.GetDataStepDelta(); stepDelta != nil {
+			log.Printf("step.delta idx=%d type=%s", stepDelta.Index, stepDelta.Delta.Type)
+			builder.apply(stepDelta)
 			if textDelta := stepDelta.GetDeltaText(); textDelta != nil {
 				text.WriteString(textDelta.GetText())
 			}
 			if thoughtDelta := stepDelta.GetDeltaThoughtSummary(); thoughtDelta != nil {
 				if content := thoughtDelta.GetContentText(); content != nil {
-					if stepDelta.GetIndex() != currentThoughtIndex {
-						sendThought(s, threadID, &thought)
-						currentThoughtIndex = stepDelta.GetIndex()
-					}
-					thought.WriteString(content.GetText())
+					sendThought(s, threadID, content.GetText())
 				}
 			}
 		}
+		if stepStop := event.GetDataStepStop(); stepStop != nil {
+			finished := builder.finish()
+			log.Printf("step.stop  idx=%d %s", stepStop.Index, describeStep(finished))
+			responseSteps = append(responseSteps, finished)
+		}
 		if completed := event.GetDataInteractionCompleted(); completed != nil {
-			interactionID = completed.Interaction.ID
 			if tokens := completed.Interaction.Usage.GetTotalTokens(); tokens != nil {
 				totalTokens = *tokens
 			}
 		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return text.String(), nil, totalTokens, errors.New(*msg)
+				return text.String(), responseSteps, totalTokens, errors.New(*msg)
 			}
-			return text.String(), nil, totalTokens, errors.New("Stream errored")
+			return text.String(), responseSteps, totalTokens, errors.New("Stream errored")
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
 			editMessage(s, answer, thinkingSubtext(us), text.String(), shouldRender(us, text.String()))
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return text.String(), nil, totalTokens, err
-	}
+	return text.String(), responseSteps, totalTokens, stream.Err()
+}
 
-	interaction, err := clients.InteractionsClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
-	if err != nil {
-		return text.String(), nil, totalTokens, err
+func describeStep(step interactions.Step) string {
+	switch {
+	case step.ModelOutputStep != nil:
+		var length int
+		for _, content := range step.ModelOutputStep.Content {
+			if content.TextContent != nil {
+				length += len(content.TextContent.Text)
+			}
+		}
+		return fmt.Sprintf("model_output blocks=%d textLen=%d", len(step.ModelOutputStep.Content), length)
+	case step.ThoughtStep != nil:
+		var signatureLen int
+		if signature := step.ThoughtStep.Signature; signature != nil {
+			signatureLen = len(*signature)
+		}
+		return fmt.Sprintf("thought summaries=%d sigLen=%d", len(step.ThoughtStep.Summary), signatureLen)
+	case step.FunctionCallStep != nil:
+		keys := make([]string, 0, len(step.FunctionCallStep.Arguments))
+		for key := range step.FunctionCallStep.Arguments {
+			keys = append(keys, key)
+		}
+		return fmt.Sprintf("function_call name=%s id=%s argKeys=%v", step.FunctionCallStep.Name, step.FunctionCallStep.ID, keys)
 	}
-	return text.String(), interaction.Interaction.GetSteps(), totalTokens, nil
+	return fmt.Sprintf("type=%s", step.Type)
+}
+
+type stepBuilder struct {
+	step      interactions.Step
+	text      strings.Builder
+	arguments strings.Builder
+	signature string
+}
+
+func (b *stepBuilder) start(step interactions.Step) {
+	*b = stepBuilder{step: step}
+	if output := step.ModelOutputStep; output != nil {
+		for _, content := range output.Content {
+			if content.TextContent != nil {
+				b.text.WriteString(content.TextContent.Text)
+			}
+		}
+	}
+	if thought := step.ThoughtStep; thought != nil && thought.Signature != nil {
+		b.signature = *thought.Signature
+	}
+}
+
+func (b *stepBuilder) apply(delta *interactions.StepDelta) {
+	if textDelta := delta.GetDeltaText(); textDelta != nil {
+		b.text.WriteString(textDelta.GetText())
+	}
+	if argumentsDelta := delta.GetDeltaArgumentsDelta(); argumentsDelta != nil {
+		if arguments := argumentsDelta.GetArguments(); arguments != nil {
+			b.arguments.WriteString(*arguments)
+		}
+	}
+	if signatureDelta := delta.GetDeltaThoughtSignature(); signatureDelta != nil {
+		if signature := signatureDelta.GetSignature(); signature != nil {
+			b.signature = *signature
+		}
+	}
+}
+
+func (b *stepBuilder) finish() interactions.Step {
+	switch {
+	case b.step.ModelOutputStep != nil:
+		return interactions.NewStep(interactions.ModelOutputStep{
+			Content: []interactions.Content{textContent(b.text.String())},
+			Error:   b.step.ModelOutputStep.Error,
+		})
+	case b.step.ThoughtStep != nil:
+		thought := interactions.ThoughtStep{Summary: b.step.ThoughtStep.Summary}
+		if b.signature != "" {
+			thought.Signature = &b.signature
+		}
+		return interactions.NewStep(thought)
+	case b.step.FunctionCallStep != nil:
+		call := *b.step.FunctionCallStep
+		if b.arguments.Len() > 0 {
+			var arguments map[string]any
+			if err := json.Unmarshal([]byte(b.arguments.String()), &arguments); err != nil {
+				log.Println("Error parsing function call arguments", err)
+			} else {
+				call.Arguments = arguments
+			}
+		}
+		return interactions.NewStep(call)
+	}
+	return b.step
 }
 
 func defaultUserSettings() *userSettings {
@@ -799,14 +886,13 @@ func toggle(flag *bool, label string) string {
 	return "Disabled " + label
 }
 
-func sendThought(s *discordgo.Session, threadID string, thought *strings.Builder) {
-	if threadID == "" || thought.Len() == 0 {
+func sendThought(s *discordgo.Session, threadID, thought string) {
+	if threadID == "" || thought == "" {
 		return
 	}
-	if _, err := s.ChannelMessageSend(threadID, truncate(thought.String(), maxMsgLength)); err != nil {
+	if _, err := s.ChannelMessageSend(threadID, truncate(thought, maxMsgLength)); err != nil {
 		log.Println("Error sending thought", err)
 	}
-	thought.Reset()
 }
 
 func truncate(text string, limit int) string {
