@@ -449,7 +449,6 @@ func channelHistory(channelID string) []interactions.Step {
 func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
 		Model:             interactions.Model(us.model),
-		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
 		Tools:             enabledTools(us),
@@ -458,9 +457,11 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		GenerationConfig:  generationConfig(us),
 	}
 
+	steps := channelHistory(channelID)
 	var turnSteps []interactions.Step
 	var totalTokens int
 	for {
+		create.Input = genai.Ptr(interactions.NewInteractionsInput(steps))
 		interactionID, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
 		totalTokens = tokens
 		if err != nil {
@@ -471,27 +472,20 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		if err != nil {
 			return "", turnSteps, totalTokens, err
 		}
-		steps := interaction.GetSteps()
-		for _, step := range steps {
-			if step.FunctionResultStep == nil {
-				turnSteps = append(turnSteps, step)
-			}
-		}
+		responseSteps := interaction.GetSteps()
+		steps = append(steps, responseSteps...)
+		turnSteps = append(turnSteps, responseSteps...)
 
-		calls := functionCalls(steps)
+		calls := functionCalls(responseSteps)
 		if len(calls) == 0 {
-			return outputText(steps), turnSteps, totalTokens, nil
+			return outputText(responseSteps), turnSteps, totalTokens, nil
 		}
-
-		results := make([]interactions.Step, 0, len(calls))
 		for _, call := range calls {
 			log.Printf("Calling function %s", call.Name)
 			result := interactions.NewStep(functionResult(ctx, s, guildID, call))
-			results = append(results, result)
+			steps = append(steps, result)
 			turnSteps = append(turnSteps, result)
 		}
-		create.PreviousInteractionID = genai.Ptr(interactionID)
-		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
 	}
 }
 
