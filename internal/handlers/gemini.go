@@ -457,7 +457,6 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	}
 
 	var answerText strings.Builder
-	var turnSteps []interactions.Step
 	var totalTokens int
 	for {
 		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
@@ -471,20 +470,15 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 		if err != nil {
 			return answerText.String(), nil, totalTokens, err
 		}
-		generated := generatedSteps(steps)
-		turnSteps = append(turnSteps, generated...)
 
 		var results []interactions.Step
-		for _, step := range generated {
-			if call := step.FunctionCallStep; call != nil {
-				log.Printf("Calling function %s", call.Name)
-				results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
-			}
+		for _, call := range pendingCalls(steps) {
+			log.Printf("Calling function %s", call.Name)
+			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
 		}
 		if len(results) == 0 {
-			return answerText.String(), turnSteps, totalTokens, nil
+			return answerText.String(), turnSteps(steps), totalTokens, nil
 		}
-		turnSteps = append(turnSteps, results...)
 
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
@@ -686,20 +680,30 @@ func finishedInteraction(ctx context.Context, interactionID string) ([]interacti
 	return res.Interaction.GetSteps(), nil
 }
 
-func generatedSteps(steps []interactions.Step) []interactions.Step {
+func turnSteps(steps []interactions.Step) []interactions.Step {
 	start := 0
 	for i, step := range steps {
 		if step.UserInputStep != nil {
 			start = i + 1
 		}
 	}
-	var kept []interactions.Step
-	for _, step := range steps[start:] {
-		if step.FunctionResultStep == nil {
-			kept = append(kept, step)
+	return slices.Clone(steps[start:])
+}
+
+func pendingCalls(steps []interactions.Step) []*interactions.FunctionCallStep {
+	answered := map[string]bool{}
+	for _, step := range steps {
+		if result := step.FunctionResultStep; result != nil {
+			answered[result.CallID] = true
 		}
 	}
-	return kept
+	var calls []*interactions.FunctionCallStep
+	for _, step := range steps {
+		if call := step.FunctionCallStep; call != nil && !answered[call.ID] {
+			calls = append(calls, call)
+		}
+	}
+	return calls
 }
 
 func defaultUserSettings() *userSettings {
