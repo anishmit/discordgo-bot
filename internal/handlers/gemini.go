@@ -460,7 +460,8 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	steps := channelHistory(channelID)
 	var turnSteps []interactions.Step
 	var totalTokens int
-	for {
+	for round := 1; ; round++ {
+		log.Printf("round %d input (%d steps): %s", round, len(steps), describeSteps(steps))
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(steps))
 		interactionID, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
 		totalTokens = tokens
@@ -473,6 +474,7 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 			return "", turnSteps, totalTokens, err
 		}
 		responseSteps := interaction.GetSteps()
+		log.Printf("round %d response (%d steps): %s", round, len(responseSteps), describeSteps(responseSteps))
 		for _, step := range responseSteps {
 			if step.FunctionResultStep != nil {
 				continue
@@ -681,6 +683,37 @@ func finishedInteraction(ctx context.Context, interactionID string) (*interactio
 		return nil, err
 	}
 	return res.Interaction, nil
+}
+
+func describeSteps(steps []interactions.Step) string {
+	descriptions := make([]string, len(steps))
+	for i, step := range steps {
+		switch {
+		case step.UserInputStep != nil:
+			descriptions[i] = fmt.Sprintf("user_input(contents=%d)", len(step.UserInputStep.Content))
+		case step.ThoughtStep != nil:
+			var signatureLen int
+			if signature := step.ThoughtStep.Signature; signature != nil {
+				signatureLen = len(*signature)
+			}
+			descriptions[i] = fmt.Sprintf("thought(summaries=%d,sig=%d)", len(step.ThoughtStep.Summary), signatureLen)
+		case step.ModelOutputStep != nil:
+			var textLen int
+			for _, content := range step.ModelOutputStep.Content {
+				if content.TextContent != nil {
+					textLen += len(content.TextContent.Text)
+				}
+			}
+			descriptions[i] = fmt.Sprintf("model_output(text=%d)", textLen)
+		case step.FunctionCallStep != nil:
+			descriptions[i] = fmt.Sprintf("function_call(%s,%s)", step.FunctionCallStep.Name, step.FunctionCallStep.ID)
+		case step.FunctionResultStep != nil:
+			descriptions[i] = fmt.Sprintf("function_result(%s)", step.FunctionResultStep.CallID)
+		default:
+			descriptions[i] = string(step.Type)
+		}
+	}
+	return strings.Join(descriptions, " ")
 }
 
 func outputText(steps []interactions.Step) string {
