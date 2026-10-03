@@ -686,7 +686,31 @@ func turnSteps(steps []interactions.Step) []interactions.Step {
 			start = i + 1
 		}
 	}
-	return slices.Clone(steps[start:])
+	var kept []interactions.Step
+	for _, step := range steps[start:] {
+		if step.ThoughtStep != nil {
+			continue
+		}
+		if output := step.ModelOutputStep; output != nil {
+			output.Content = nonEmptyContents(output.Content)
+			if len(output.Content) == 0 {
+				continue
+			}
+		}
+		kept = append(kept, step)
+	}
+	return kept
+}
+
+func nonEmptyContents(contents []interactions.Content) []interactions.Content {
+	var kept []interactions.Content
+	for _, content := range contents {
+		if text := content.TextContent; text != nil && text.Text == "" {
+			continue
+		}
+		kept = append(kept, content)
+	}
+	return kept
 }
 
 func pendingCalls(steps []interactions.Step) []*interactions.FunctionCallStep {
@@ -752,8 +776,10 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	topOption := i.ApplicationCommandData().Options[0]
 
 	var content string
+	var flags discordgo.MessageFlags
 	if topOption.Name == "settings" {
 		content = applySetting(i.ChannelID, userID, topOption)
+		flags = discordgo.MessageFlagsEphemeral
 	} else {
 		clearHistory(i.ChannelID)
 		content = "Cleared history for this channel"
@@ -761,7 +787,7 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral},
+		Data: &discordgo.InteractionResponseData{Content: content, Flags: flags},
 	}); err != nil {
 		log.Println("Error responding to interaction", err)
 	}
