@@ -721,9 +721,6 @@ func turnSteps(steps []interactions.Step) []interactions.Step {
 	}
 	var kept []interactions.Step
 	for _, step := range steps[start:] {
-		if step.ThoughtStep != nil {
-			continue
-		}
 		if output := step.ModelOutputStep; output != nil {
 			output.Content = nonEmptyContents(output.Content)
 			if len(output.Content) == 0 {
