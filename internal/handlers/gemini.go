@@ -684,9 +684,6 @@ func setExcluded(channelID string, covered, included map[string]bool) {
 
 func menuOptionValues(m *discordgo.Message, customID string) map[string]bool {
 	covered := map[string]bool{}
-	if m == nil {
-		return covered
-	}
 	for _, component := range m.Components {
 		row, ok := component.(*discordgo.ActionsRow)
 		if !ok {
