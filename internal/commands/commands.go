@@ -75,97 +75,14 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Configure Gemini settings",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Type:        discordgo.ApplicationCommandOptionSubCommandGroup,
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "settings",
-				Description: "Settings",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "search",
-						Description: "Toggle Google Search",
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "markdown",
-						Description: "Toggle markdown rendering for every response",
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "code",
-						Description: "Toggle code execution",
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "url-context",
-						Description: "Toggle URL context",
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "model",
-						Description: "Change model",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type:        discordgo.ApplicationCommandOptionString,
-								Name:        "name",
-								Description: "Model name",
-								Required:    true,
-								Choices: []*discordgo.ApplicationCommandOptionChoice{
-									{
-										Name:  "Gemini 3.8 Flash",
-										Value: "gemini-3.8-flash",
-									},
-									{
-										Name:  "Gemini 3.5 Flash Lite",
-										Value: "gemini-3.5-flash-lite",
-									},
-									{
-										Name:  "Gemini 3.1 Pro",
-										Value: "gemini-3.1-pro-preview",
-									},
-									{
-										Name:  "Gemini 3 Flash",
-										Value: "gemini-3-flash-preview",
-									},
-								},
-							},
-						},
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "thinking",
-						Description: "Change thinking level",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type:        discordgo.ApplicationCommandOptionString,
-								Name:        "name",
-								Description: "Model name",
-								Required:    true,
-								Choices: []*discordgo.ApplicationCommandOptionChoice{
-									{
-										Name:  "Default",
-										Value: "DEFAULT",
-									},
-									{
-										Name:  "Minimal",
-										Value: "MINIMAL",
-									},
-									{
-										Name:  "Low",
-										Value: "LOW",
-									},
-									{
-										Name:  "Medium",
-										Value: "MEDIUM",
-									},
-									{
-										Name:  "High",
-										Value: "HIGH",
-									},
-								},
-							},
-						},
-					},
-				},
+				Description: "Change Gemini settings",
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "history",
+				Description: "Select the messages included in the history",
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,

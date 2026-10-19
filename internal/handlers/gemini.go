@@ -43,15 +43,39 @@ const (
 	streamEditInterval   = 2 * time.Second
 	thoughtsThreadName   = "Thoughts"
 	threadArchiveMinutes = 1440
-	maxHistoryEntries    = 100
+	maxHistoryEntries    = 50
+	maxSelectOptions     = 25
+	maxOptionLabel       = 100
+	maxOptionDescription = 100
+	emptyLabel           = "\u200b"
+	historyMenuPrefix    = "geminiHistory"
+	modelMenuID          = "geminiSelectModel"
+	thinkingMenuID       = "geminiSelectThinking"
+	defaultThinkingLevel = "DEFAULT"
+	historyMenus         = (maxHistoryEntries + maxSelectOptions - 1) / maxSelectOptions
 	historyTimeZone      = "America/Los_Angeles"
 )
 
-var models = map[string][]interactions.ThinkingLevel{
-	"gemini-3.8-flash":       {interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh},
-	"gemini-3.5-flash-lite":  {interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh},
-	"gemini-3.1-pro-preview": {interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh},
-	"gemini-3-flash-preview": {interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh},
+var geminiModels = []struct {
+	id             string
+	label          string
+	thinkingLevels []interactions.ThinkingLevel
+}{
+	{"gemini-3.8-flash", "Gemini 3.8 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+	{"gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+	{"gemini-3.1-pro-preview", "Gemini 3.1 Pro", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+	{"gemini-3-flash-preview", "Gemini 3 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+}
+
+var geminiToggles = []struct {
+	customID string
+	label    string
+	field    func(*userSettings) *bool
+}{
+	{"geminiToggleSearch", "Google search", func(us *userSettings) *bool { return &us.search }},
+	{"geminiToggleCode", "Code execution", func(us *userSettings) *bool { return &us.code }},
+	{"geminiToggleUrlContext", "URL context", func(us *userSettings) *bool { return &us.urlContext }},
+	{"geminiToggleMarkdown", "Force markdown", func(us *userSettings) *bool { return &us.markdown }},
 }
 
 var markdownRenderer = goldmark.New(
@@ -94,40 +118,40 @@ var systemInstructionFmt = `- You are a chatbot inside a Discord text channel. Y
 - Discord does not support LaTeX, so never use LaTeX.
 - Remove AI patterns: avoid the patterns below while preserving meaning and matching the intended tone.
   - Content
-		- **Superficial -ing phrases.** "highlighting...", "ensuring...", "reflecting...", "showcasing...", "fostering...". Delete or expand with real sources.
-		- **Vague attributions.** "Experts believe", "Industry reports suggest", "Some critics argue". Name the source or delete.
+		- Superficial -ing phrases. "highlighting...", "ensuring...", "reflecting...", "showcasing...", "fostering...". Delete or expand with real sources.
+		- Vague attributions. "Experts believe", "Industry reports suggest", "Some critics argue". Name the source or delete.
 	- Language
-		- **AI vocabulary.** Additionally, crucial, delve, enduring, enhance, fostering, garner, interplay, intricate, landscape (abstract), pivotal, showcase, tapestry (abstract), testament, underscore, vibrant. Replace with plain words.
-		- **Fancy ways to say "is".** "serves as", "stands as", "boasts", "features". Say "is" or "has".
-		- **"Not just X, but Y."** State the point directly instead.
-		- **Rule of three.** Don't force ideas into groups of three. Use the natural number.
-		- **Synonym cycling.** Protagonist, main character, central figure, hero all in one paragraph. Pick one, repeat it.
-		- **False ranges.** "from X to Y" where X and Y aren't on a meaningful scale. List topics directly.
+		- AI vocabulary. Additionally, crucial, delve, enduring, enhance, fostering, garner, interplay, intricate, landscape (abstract), pivotal, showcase, tapestry (abstract), testament, underscore, vibrant. Replace with plain words.
+		- Fancy ways to say "is". "serves as", "stands as", "boasts", "features". Say "is" or "has".
+		- "Not just X, but Y." State the point directly instead.
+		- Rule of three. Don't force ideas into groups of three. Use the natural number.
+		- Synonym cycling. Protagonist, main character, central figure, hero all in one paragraph. Pick one, repeat it.
+		- False ranges. "from X to Y" where X and Y aren't on a meaningful scale. List topics directly.
 	- Style
-		- **Em dash overuse.** Avoid em dashes entirely. Use periods or commas only (no parentheses, no en dashes, no hyphen-as-dash substitutes). If a thought needs separation, end the sentence or use a comma.
-		- **Colon overuse.** Colons are fine before a list or example, not as mid-sentence connectors. "If you're coming from traditional automation: instead of registering event handlers, you describe conditions" adds nothing with the colon. Rewrite to let the point stand on its own without comparison framing. "Describing when the scheduler should fire works best as plain English." Same meaning, no crutch punctuation.
-		- **Boldface overuse.** Don't bold every proper noun or acronym.
-		- **Inline-header lists.** The tell is a bold label and colon that restates the line: "**Performance:** Performance improved...". Convert those to prose. A bold lead-in that ends in a period, names the item, and is followed by genuinely new detail ("**Schema in TypeScript.** Tables live in one file.") is fine, not a tell.
-		- **Title case headings.** Use sentence case.
-		- **Decorative emojis.** Remove from headings and bullets.
-		 **Curly quotes.** Use straight quotes.
+		- Em dash overuse. Avoid em dashes entirely. Use periods or commas only (no parentheses, no en dashes, no hyphen-as-dash substitutes). If a thought needs separation, end the sentence or use a comma.
+		- Colon overuse. Colons are fine before a list or example, not as mid-sentence connectors. "If you're coming from traditional automation: instead of registering event handlers, you describe conditions" adds nothing with the colon. Rewrite to let the point stand on its own without comparison framing. "Describing when the scheduler should fire works best as plain English." Same meaning, no crutch punctuation.
+		- Boldface overuse. Don't bold every proper noun or acronym.
+		- Inline-header lists. The tell is a bold label and colon that restates the line: "Performance: Performance improved...". Convert those to prose. A bold lead-in that ends in a period, names the item, and is followed by genuinely new detail ("Schema in TypeScript. Tables live in one file.") is fine, not a tell.
+		- Title case headings. Use sentence case.
+		- Decorative emojis. Remove from headings and bullets.
+		 Curly quotes. Use straight quotes.
 	- Communication artifacts
-		- **Chatbot phrases.** "I hope this helps!", "Let me know if...", "Of course!", "Certainly!", "Found the smoking gun!" Remove.
-		- **Sycophantic tone.** "Great question! You're absolutely right!" Respond directly.
+		- Chatbot phrases. "I hope this helps!", "Let me know if...", "Of course!", "Certainly!", "Found the smoking gun!" Remove.
+		- Sycophantic tone. "Great question! You're absolutely right!" Respond directly.
 	- Filler
-		- **Filler phrases.** "In order to" becomes "To". "Due to the fact that" becomes "Because". Delete "It is important to note that".
-		- **Excessive hedging.** "could potentially possibly be argued that it might" becomes "may".
-		- **Generic conclusions.** "The future looks bright." State specific plans or facts.
+		- Filler phrases. "In order to" becomes "To". "Due to the fact that" becomes "Because". Delete "It is important to note that".
+		- Excessive hedging. "could potentially possibly be argued that it might" becomes "may".
+		- Generic conclusions. "The future looks bright." State specific plans or facts.
 	- Jargon
-		- **Abstract metaphor nouns.** Substrate (base), wedge, wedge in (add), vector (way, method), locus, vantage, nexus, primitive as a noun, harness as a metaphor, surface as in "API surface", bedrock, scaffolding as a metaphor, modality, paradigm, gold-plating (more than the job needs), ratchet as a metaphor (the mechanism's real name, or a limit that only tightens), evacuate for moving code (move out), endgame (the last phase), north star, flywheel. These read as technical but usually have a plainer concrete word. Pick the concrete word.
+		- Abstract metaphor nouns. Substrate (base), wedge, wedge in (add), vector (way, method), locus, vantage, nexus, primitive as a noun, harness as a metaphor, surface as in "API surface", bedrock, scaffolding as a metaphor, modality, paradigm, gold-plating (more than the job needs), ratchet as a metaphor (the mechanism's real name, or a limit that only tightens), evacuate for moving code (move out), endgame (the last phase), north star, flywheel. These read as technical but usually have a plainer concrete word. Pick the concrete word.
 	- Plain speech
-		- **Say what it does, not how it feels.** "the database stays close at hand", "SQL you can read", "types that follow your schema" name a feeling. The fix names the mechanism or a number: ".toSQL() returns the exact string sent to the database", "a column rename fails the build". Ask what the sentence tells the reader to do or know, then write that. If you can't restate it as a concrete instruction, fact, or number, cut it. One more check: if the sentence could appear unchanged in another project's docs, it says nothing about this one. Cut it.
-		- **Shorten or split dense sentences.** If the reader has to backtrack to parse a sentence, break it in two or drop clauses. One idea per sentence.
-		- **Active voice.** Prefer it. Catch "is/are/was/were + past participle" and name the actor: "queries are validated" becomes "the compiler validates queries", "the file is parsed by the loader" becomes "the loader parses the file". Passive is fine only when the actor is unknown or genuinely doesn't matter.
-		- **Cut adverbs, or use a stronger verb.** "runs quickly" becomes "is fast" or the number, and "significantly improves" becomes the measured delta. An adverb propping up a weak verb means the verb is wrong.
-		- **Prefer the plain word.** "utilize" and "leverage" become "use", "facilitate" becomes "help", "numerous" becomes "many", "in the event that" becomes "if". The fancier synonym is rarely clearer.
-		- **Mannered prose.** Metaphor or flourish where a literal phrase exists: aphorisms ("wire it or delete it"), rhetorical fragments for effect, personified code ("the plan holds it"), figurative verbs ("rides along", "stands on"), stock framing phrases. "A dial worth turning" becomes "a parameter worth varying". Say what you mean. Rule 26 covers the metaphor nouns.
-		- **Over-compression.** Dropped articles, verbless fragments, symbol-speak, and abbreviations that make the reader decode instead of read. "Parser rejects bad date → exit 2, no write" becomes "The parser rejects a bad date, exits with code 2, and writes nothing." Write whole sentences with their articles and verbs, and spell out arrows and abbreviations.`
+		- Say what it does, not how it feels. "the database stays close at hand", "SQL you can read", "types that follow your schema" name a feeling. The fix names the mechanism or a number: ".toSQL() returns the exact string sent to the database", "a column rename fails the build". Ask what the sentence tells the reader to do or know, then write that. If you can't restate it as a concrete instruction, fact, or number, cut it. One more check: if the sentence could appear unchanged in another project's docs, it says nothing about this one. Cut it.
+		- Shorten or split dense sentences. If the reader has to backtrack to parse a sentence, break it in two or drop clauses. One idea per sentence.
+		- Active voice. Prefer it. Catch "is/are/was/were + past participle" and name the actor: "queries are validated" becomes "the compiler validates queries", "the file is parsed by the loader" becomes "the loader parses the file". Passive is fine only when the actor is unknown or genuinely doesn't matter.
+		- Cut adverbs, or use a stronger verb. "runs quickly" becomes "is fast" or the number, and "significantly improves" becomes the measured delta. An adverb propping up a weak verb means the verb is wrong.
+		- Prefer the plain word. "utilize" and "leverage" become "use", "facilitate" becomes "help", "numerous" becomes "many", "in the event that" becomes "if". The fancier synonym is rarely clearer.
+		- Mannered prose. Metaphor or flourish where a literal phrase exists: aphorisms ("wire it or delete it"), rhetorical fragments for effect, personified code ("the plan holds it"), figurative verbs ("rides along", "stands on"), stock framing phrases. "A dial worth turning" becomes "a parameter worth varying". Say what you mean. Rule 26 covers the metaphor nouns.
+		- Over-compression. Dropped articles, verbless fragments, symbol-speak, and abbreviations that make the reader decode instead of read. "Parser rejects bad date → exit 2, no write" becomes "The parser rejects a bad date, exits with code 2, and writes nothing." Write whole sentences with their articles and verbs, and spell out arrows and abbreviations.`
 
 var geminiFunctions = []interactions.Function{
 	{
@@ -219,8 +243,16 @@ type msgRef struct {
 }
 
 type historyEntry struct {
-	msgID string
-	steps []interactions.Step
+	msgID    string
+	author   string
+	content  string
+	steps    []interactions.Step
+	excluded bool
+}
+
+type thoughtsThread struct {
+	answer msgRef
+	id     string
 }
 
 type userSettings struct {
@@ -233,8 +265,9 @@ type userSettings struct {
 }
 
 var (
-	historyMu sync.Mutex
-	history   = map[string][]historyEntry{}
+	historyMu      sync.Mutex
+	history        = map[string][]historyEntry{}
+	loadedChannels = map[string]bool{}
 
 	settingsMu sync.Mutex
 	settings   = map[string]map[string]*userSettings{}
@@ -252,6 +285,34 @@ func init() {
 	registerMessageCreateHandler(geminiMsgCreateHandler)
 	registerMessageUpdateHandler(geminiMsgUpdateHandler)
 	registerCommandHandler("gemini", geminiCommandHandler)
+	for i := range historyMenus {
+		registerComponentHandler(fmt.Sprintf("%s%d", historyMenuPrefix, i), geminiHistoryComponentHandler)
+	}
+	for _, t := range geminiToggles {
+		registerComponentHandler(t.customID, geminiSettingsComponentHandler)
+	}
+	registerComponentHandler(modelMenuID, geminiSettingsComponentHandler)
+	registerComponentHandler(thinkingMenuID, geminiSettingsComponentHandler)
+}
+
+func geminiHistoryComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.MessageComponentData()
+
+	included := map[string]bool{}
+	for _, value := range data.Values {
+		included[value] = true
+	}
+	setExcluded(i.ChannelID, menuOptionValues(i.Message, data.CustomID), included)
+
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Content:    i.Message.Content,
+			Components: historyComponents(i.ChannelID),
+		},
+	}); err != nil {
+		log.Println("Error responding to interaction", err)
+	}
 }
 
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -259,14 +320,19 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	userStep, err := messageStep(s, m.Message)
+	mentioned := isBotMentioned(s, m)
+	if mentioned {
+		loadHistory(s, m.ChannelID, m.ID)
+	}
+
+	entry, err := messageEntry(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	appendHistory(m.ChannelID, m.ID, userStep)
+	appendHistory(m.ChannelID, entry)
 
-	if !isBotMentioned(s, m) {
+	if !mentioned {
 		return
 	}
 
@@ -286,33 +352,31 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	answer := msgRef{channelID: m.ChannelID, messageID: msg.ID}
 
-	var threadID string
-	if thread, err := s.MessageThreadStart(m.ChannelID, msg.ID, thoughtsThreadName, threadArchiveMinutes); err != nil {
-		log.Println("Error starting thoughts thread", err)
-	} else {
-		threadID = thread.ID
-	}
-
-	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, threadID, us)
+	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, &thoughtsThread{answer: answer}, us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
 		return
 	}
 	editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), text, shouldRender(us, text))
-	appendHistory(m.ChannelID, msg.ID, turnSteps)
+	appendHistory(m.ChannelID, historyEntry{
+		msgID:   msg.ID,
+		author:  displayName(msg),
+		content: text,
+		steps:   turnSteps,
+	})
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID {
 		return
 	}
-	userStep, err := messageStep(s, m.Message)
+	entry, err := messageEntry(s, m.Message)
 	if err != nil {
 		log.Println("Error building history entry", err)
 		return
 	}
-	updateHistory(m.ChannelID, m.ID, userStep)
+	updateHistory(m.ChannelID, entry)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -335,10 +399,10 @@ func logEntry(msgID, author, authorID, text string, media []interactions.Content
 	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
 }
 
-func messageStep(s *discordgo.Session, m *discordgo.Message) ([]interactions.Step, error) {
+func messageEntry(s *discordgo.Session, m *discordgo.Message) (historyEntry, error) {
 	text, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
-		return nil, err
+		return historyEntry{}, err
 	}
 
 	var media []interactions.Content
@@ -356,8 +420,23 @@ func messageStep(s *discordgo.Session, m *discordgo.Message) ([]interactions.Ste
 			media = append(media, content)
 		}
 	}
-	contents := logEntry(m.ID, displayName(m), m.Author.ID, text, media)
-	return []interactions.Step{interactions.NewStep(interactions.UserInputStep{Content: contents})}, nil
+	author := displayName(m)
+	var step interactions.Step
+	if m.Author.ID == s.State.User.ID {
+		step = interactions.NewStep(interactions.ModelOutputStep{
+			Content: append([]interactions.Content{textContent(text)}, media...),
+		})
+	} else {
+		step = interactions.NewStep(interactions.UserInputStep{
+			Content: logEntry(m.ID, author, m.Author.ID, text, media),
+		})
+	}
+	return historyEntry{
+		msgID:   m.ID,
+		author:  author,
+		content: text,
+		steps:   []interactions.Step{step},
+	}, nil
 }
 
 func textContent(text string) interactions.Content {
@@ -442,21 +521,22 @@ func displayName(m *discordgo.Message) string {
 	return m.Author.Username
 }
 
-func appendHistory(channelID, msgID string, steps []interactions.Step) {
+func appendHistory(channelID string, entry historyEntry) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[channelID] = append(history[channelID], historyEntry{msgID: msgID, steps: steps})
+	history[channelID] = append(history[channelID], entry)
 	if n := len(history[channelID]); n > maxHistoryEntries {
 		history[channelID] = history[channelID][n-maxHistoryEntries:]
 	}
 }
 
-func updateHistory(channelID, msgID string, steps []interactions.Step) {
+func updateHistory(channelID string, entry historyEntry) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	for i := range history[channelID] {
-		if history[channelID][i].msgID == msgID {
-			history[channelID][i].steps = steps
+		if history[channelID][i].msgID == entry.msgID {
+			entry.excluded = history[channelID][i].excluded
+			history[channelID][i] = entry
 			return
 		}
 	}
@@ -466,6 +546,70 @@ func clearHistory(channelID string) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	delete(history, channelID)
+	loadedChannels[channelID] = true
+}
+
+func markLoaded(channelID string) bool {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	if loadedChannels[channelID] {
+		return false
+	}
+	loadedChannels[channelID] = true
+	return true
+}
+
+func unmarkLoaded(channelID string) {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	delete(loadedChannels, channelID)
+}
+
+func loadHistory(s *discordgo.Session, channelID, beforeID string) {
+	if !markLoaded(channelID) {
+		return
+	}
+	msgs, err := s.ChannelMessages(channelID, maxHistoryEntries, beforeID, "", "")
+	if err != nil {
+		log.Println("Error fetching channel messages", err)
+		unmarkLoaded(channelID)
+		return
+	}
+
+	entries := make([]historyEntry, 0, len(msgs))
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Author == nil || (m.Content == "" && len(m.Attachments) == 0) {
+			continue
+		}
+		entry, err := messageEntry(s, m)
+		if err != nil {
+			log.Println("Error building history entry", err)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	mergeHistory(channelID, entries)
+}
+
+func mergeHistory(channelID string, entries []historyEntry) {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	existing := map[string]bool{}
+	for _, e := range history[channelID] {
+		existing[e.msgID] = true
+	}
+
+	var merged []historyEntry
+	for _, entry := range entries {
+		if !existing[entry.msgID] {
+			merged = append(merged, entry)
+		}
+	}
+	history[channelID] = append(merged, history[channelID]...)
+	if n := len(history[channelID]); n > maxHistoryEntries {
+		history[channelID] = history[channelID][n-maxHistoryEntries:]
+	}
 }
 
 func channelHistory(channelID string) []interactions.Step {
@@ -473,12 +617,95 @@ func channelHistory(channelID string) []interactions.Step {
 	defer historyMu.Unlock()
 	var all []interactions.Step
 	for _, e := range history[channelID] {
+		if e.excluded {
+			continue
+		}
 		all = append(all, e.steps...)
 	}
 	return all
 }
 
-func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, threadID string, us userSettings) (string, []interactions.Step, int, error) {
+func historyComponents(channelID string) []discordgo.MessageComponent {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	entries := history[channelID]
+
+	var rows []discordgo.MessageComponent
+	for start := 0; start < len(entries); start += maxSelectOptions {
+		chunk := entries[start:min(start+maxSelectOptions, len(entries))]
+		options := make([]discordgo.SelectMenuOption, len(chunk))
+		for i, entry := range chunk {
+			options[i] = historyOption(entry)
+		}
+		rows = append(rows, discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.SelectMenu{
+					MenuType:    discordgo.StringSelectMenu,
+					CustomID:    fmt.Sprintf("%s%d", historyMenuPrefix, len(rows)),
+					Placeholder: "Messages included in the history",
+					MinValues:   genai.Ptr(0),
+					MaxValues:   len(options),
+					Options:     options,
+				},
+			},
+		})
+	}
+	return rows
+}
+
+func historyOption(entry historyEntry) discordgo.SelectMenuOption {
+	label := truncate(entry.content, maxOptionLabel)
+	if label == "" {
+		label = emptyLabel
+	}
+	timestamp, err := discordgo.SnowflakeTimestamp(entry.msgID)
+	if err != nil {
+		timestamp = time.Now()
+	}
+	stamp := strings.TrimSuffix(timestamp.In(timeZone).Format("1/2 3:04pm"), "m")
+	return discordgo.SelectMenuOption{
+		Label:       label,
+		Value:       entry.msgID,
+		Description: truncate(fmt.Sprintf("%s • %s", entry.author, stamp), maxOptionDescription),
+		Default:     !entry.excluded,
+	}
+}
+
+func setExcluded(channelID string, covered, included map[string]bool) {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+	for i := range history[channelID] {
+		entry := &history[channelID][i]
+		if covered[entry.msgID] {
+			entry.excluded = !included[entry.msgID]
+		}
+	}
+}
+
+func menuOptionValues(m *discordgo.Message, customID string) map[string]bool {
+	covered := map[string]bool{}
+	if m == nil {
+		return covered
+	}
+	for _, component := range m.Components {
+		row, ok := component.(*discordgo.ActionsRow)
+		if !ok {
+			continue
+		}
+		for _, rowComponent := range row.Components {
+			menu, ok := rowComponent.(*discordgo.SelectMenu)
+			if !ok || menu.CustomID != customID {
+				continue
+			}
+			for _, option := range menu.Options {
+				covered[option.Value] = true
+			}
+		}
+	}
+	return covered
+}
+
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
 		Model:             interactions.Model(us.model),
 		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
@@ -492,7 +719,7 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	var answerText strings.Builder
 	var totalTokens int
 	for {
-		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, threadID, us)
+		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, thoughts, us)
 		answerText.WriteString(text)
 		totalTokens = tokens
 		if err != nil {
@@ -647,7 +874,7 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 	}
 	return results, nil
 }
-func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, threadID string, us userSettings) (string, string, int, error) {
+func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
 	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
@@ -674,7 +901,7 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 			}
 			if thoughtDelta := stepDelta.GetDeltaThoughtSummary(); thoughtDelta != nil {
 				if content := thoughtDelta.GetContentText(); content != nil {
-					sendThought(s, threadID, content.GetText())
+					thoughts.send(s, content.GetText())
 				}
 			}
 		}
@@ -794,99 +1021,194 @@ func enabledTools(us userSettings) []interactions.Tool {
 	return tools
 }
 
-func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	var userID string
+func interactionUserID(i *discordgo.InteractionCreate) string {
 	switch {
 	case i.Member != nil && i.Member.User != nil:
-		userID = i.Member.User.ID
+		return i.Member.User.ID
 	case i.User != nil:
-		userID = i.User.ID
+		return i.User.ID
 	}
+	return ""
+}
 
+func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	userID := interactionUserID(i)
 	topOption := i.ApplicationCommandData().Options[0]
 
-	var content string
-	var flags discordgo.MessageFlags
-	if topOption.Name == "settings" {
-		content = applySetting(i.ChannelID, userID, topOption)
-		flags = discordgo.MessageFlagsEphemeral
-	} else {
+	data := &discordgo.InteractionResponseData{}
+	switch topOption.Name {
+	case "settings":
+		data.Components = settingsComponents(i.ChannelID, userID)
+		data.Flags = discordgo.MessageFlagsEphemeral
+	case "history":
+		data.Components = historyComponents(i.ChannelID)
+		if len(data.Components) == 0 {
+			data.Content = "No history for this channel"
+			data.Flags = discordgo.MessageFlagsEphemeral
+		} else {
+			data.Content = "Select the messages to include in the history"
+		}
+	case "clear":
 		clearHistory(i.ChannelID)
-		content = "Cleared history for this channel"
+		data.Content = "Cleared history for this channel"
+	default:
+		data.Content = fmt.Sprintf("Unknown subcommand `%s`", topOption.Name)
+		data.Flags = discordgo.MessageFlagsEphemeral
 	}
 
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: content, Flags: flags},
+		Data: data,
 	}); err != nil {
 		log.Println("Error responding to interaction", err)
 	}
 }
 
-func applySetting(channelID, userID string, topOption *discordgo.ApplicationCommandInteractionDataOption) string {
-	option := topOption.Options[0]
+func geminiSettingsComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	userID := interactionUserID(i)
+	customID := i.MessageComponentData().CustomID
+	values := i.MessageComponentData().Values
 
+	settingsMu.Lock()
+	us := userSettingsFor(i.ChannelID, userID)
+	switch customID {
+	case modelMenuID:
+		if len(values) > 0 {
+			setModel(us, values[0])
+		}
+	case thinkingMenuID:
+		if len(values) > 0 {
+			setThinkingLevel(us, values[0])
+		}
+	default:
+		for _, t := range geminiToggles {
+			if t.customID == customID {
+				flag := t.field(us)
+				*flag = !*flag
+			}
+		}
+	}
+	settingsMu.Unlock()
+
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{Components: settingsComponents(i.ChannelID, userID)},
+	}); err != nil {
+		log.Println("Error responding to interaction", err)
+	}
+}
+
+func settingsComponents(channelID, userID string) []discordgo.MessageComponent {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 	us := userSettingsFor(channelID, userID)
 
-	switch option.Name {
-	case "search":
-		return toggle(&us.search, "Google search")
-	case "code":
-		return toggle(&us.code, "code execution")
-	case "url-context":
-		return toggle(&us.urlContext, "URL context")
-	case "markdown":
-		return toggle(&us.markdown, "markdown rendering for every response")
-	case "model":
-		return setModel(us, option.Options[0].StringValue())
-	default:
-		return setThinkingLevel(us, option.Options[0].StringValue())
+	buttons := make([]discordgo.MessageComponent, 0, len(geminiToggles))
+	for _, t := range geminiToggles {
+		on := *t.field(us)
+		style := discordgo.DangerButton
+		if on {
+			style = discordgo.SuccessButton
+		}
+		buttons = append(buttons, discordgo.Button{
+			CustomID: t.customID,
+			Label:    fmt.Sprintf("%s: %t", t.label, on),
+			Style:    style,
+		})
+	}
+
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{Components: buttons},
+		discordgo.ActionsRow{Components: []discordgo.MessageComponent{modelMenu(us)}},
+		discordgo.ActionsRow{Components: []discordgo.MessageComponent{thinkingMenu(us)}},
 	}
 }
 
-func setModel(us *userSettings, model string) string {
+func modelMenu(us *userSettings) discordgo.SelectMenu {
+	options := make([]discordgo.SelectMenuOption, 0, len(geminiModels))
+	for _, m := range geminiModels {
+		options = append(options, discordgo.SelectMenuOption{
+			Label:   m.label,
+			Value:   m.id,
+			Default: m.id == us.model,
+		})
+	}
+	return discordgo.SelectMenu{
+		MenuType:  discordgo.StringSelectMenu,
+		CustomID:  modelMenuID,
+		MinValues: genai.Ptr(1),
+		MaxValues: 1,
+		Options:   options,
+	}
+}
+
+func thinkingMenu(us *userSettings) discordgo.SelectMenu {
+	options := []discordgo.SelectMenuOption{{
+		Label:   "Default",
+		Value:   defaultThinkingLevel,
+		Default: us.thinkingLevel == "",
+	}}
+	for _, level := range thinkingLevels(us.model) {
+		options = append(options, discordgo.SelectMenuOption{
+			Label:   strings.ToUpper(string(level)[:1]) + string(level)[1:],
+			Value:   string(level),
+			Default: level == us.thinkingLevel,
+		})
+	}
+	return discordgo.SelectMenu{
+		MenuType:  discordgo.StringSelectMenu,
+		CustomID:  thinkingMenuID,
+		MinValues: genai.Ptr(1),
+		MaxValues: 1,
+		Options:   options,
+	}
+}
+
+func thinkingLevels(model string) []interactions.ThinkingLevel {
+	for _, m := range geminiModels {
+		if m.id == model {
+			return m.thinkingLevels
+		}
+	}
+	return nil
+}
+
+func setModel(us *userSettings, model string) {
 	us.model = model
-	if us.thinkingLevel != "" && !slices.Contains(models[model], us.thinkingLevel) {
+	if us.thinkingLevel != "" && !slices.Contains(thinkingLevels(model), us.thinkingLevel) {
 		us.thinkingLevel = ""
-		return fmt.Sprintf("Changed model to `%s` (thinking level reset to `default`)", model)
 	}
-	return fmt.Sprintf("Changed model to `%s`", model)
 }
 
-func setThinkingLevel(us *userSettings, value string) string {
-	level := interactions.ThinkingLevel(strings.ToLower(value))
-	if level == "default" {
+func setThinkingLevel(us *userSettings, value string) {
+	level := interactions.ThinkingLevel(value)
+	if !slices.Contains(thinkingLevels(us.model), level) {
 		us.thinkingLevel = ""
-		return "Changed thinking level to `default`"
-	}
-	if !slices.Contains(models[us.model], level) {
-		return fmt.Sprintf("`%s` does not support thinking level `%s`", us.model, level)
-	}
-	us.thinkingLevel = level
-	return fmt.Sprintf("Changed thinking level to `%s`", level)
-}
-
-func toggle(flag *bool, label string) string {
-	*flag = !*flag
-	if *flag {
-		return "Enabled " + label
-	}
-	return "Disabled " + label
-}
-
-func sendThought(s *discordgo.Session, threadID, thought string) {
-	if threadID == "" || thought == "" {
 		return
 	}
-	if _, err := s.ChannelMessageSend(threadID, truncate(thought, maxMsgLength)); err != nil {
+	us.thinkingLevel = level
+}
+
+func (t *thoughtsThread) send(s *discordgo.Session, thought string) {
+	if thought == "" {
+		return
+	}
+	if t.id == "" {
+		thread, err := s.MessageThreadStart(t.answer.channelID, t.answer.messageID, thoughtsThreadName, threadArchiveMinutes)
+		if err != nil {
+			log.Println("Error starting thoughts thread", err)
+			return
+		}
+		t.id = thread.ID
+	}
+	if _, err := s.ChannelMessageSend(t.id, truncate(thought, maxMsgLength)); err != nil {
 		log.Println("Error sending thought", err)
 	}
 }
 
 func truncate(text string, limit int) string {
-	return text[:min(len(text), limit)]
+	runes := []rune(text)
+	return string(runes[:min(len(runes), limit)])
 }
 
 func generationConfig(us userSettings) *interactions.GenerationConfig {
