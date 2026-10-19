@@ -53,7 +53,7 @@ const (
 	settingsHeading      = "## Settings"
 	modelMenuID          = "geminiSelectModel"
 	thinkingMenuID       = "geminiSelectThinking"
-	defaultThinkingLevel = "DEFAULT"
+	defaultThinkingLevel = "default"
 	historyMenus         = (maxHistoryEntries + maxSelectOptions - 1) / maxSelectOptions
 	historyTimeZone      = "America/Los_Angeles"
 )
@@ -665,7 +665,7 @@ func historyOption(entry historyEntry) discordgo.SelectMenuOption {
 	if err != nil {
 		timestamp = time.Now()
 	}
-	stamp := strings.TrimSuffix(timestamp.In(timeZone).Format("1/2 3:04pm"), "m")
+	stamp := timestamp.In(timeZone).Format("1/2 3:04pm")
 	return discordgo.SelectMenuOption{
 		Label:       label,
 		Value:       entry.msgID,
@@ -1120,11 +1120,11 @@ func settingsComponents(channelID, userID string) []discordgo.MessageComponent {
 
 	return []discordgo.MessageComponent{
 		discordgo.TextDisplay{Content: settingsHeading},
-		discordgo.ActionsRow{Components: buttons},
 		discordgo.TextDisplay{Content: "**Model**"},
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{modelMenu(us)}},
 		discordgo.TextDisplay{Content: "**Thinking level**"},
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{thinkingMenu(us)}},
+		discordgo.ActionsRow{Components: buttons},
 	}
 }
 
