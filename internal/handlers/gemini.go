@@ -320,10 +320,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	mentioned := isBotMentioned(s, m)
-	if mentioned {
-		loadHistory(s, m.ChannelID, m.ID)
-	}
+	loadHistory(s, m.ChannelID, m.ID)
 
 	entry, err := messageEntry(s, m.Message)
 	if err != nil {
@@ -332,7 +329,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	appendHistory(m.ChannelID, entry)
 
-	if !mentioned {
+	if !isBotMentioned(s, m) {
 		return
 	}
 
