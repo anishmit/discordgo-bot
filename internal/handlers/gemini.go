@@ -661,15 +661,14 @@ func historyOption(entry historyEntry) discordgo.SelectMenuOption {
 	if label == "" {
 		label = emptyLabel
 	}
-	timestamp, err := discordgo.SnowflakeTimestamp(entry.msgID)
-	if err != nil {
-		timestamp = time.Now()
+	description := entry.author
+	if timestamp, err := discordgo.SnowflakeTimestamp(entry.msgID); err == nil {
+		description = fmt.Sprintf("%s • %s", entry.author, timestamp.In(timeZone).Format("1/2 3:04pm"))
 	}
-	stamp := timestamp.In(timeZone).Format("1/2 3:04pm")
 	return discordgo.SelectMenuOption{
 		Label:       label,
 		Value:       entry.msgID,
-		Description: truncate(fmt.Sprintf("%s • %s", entry.author, stamp), maxOptionDescription),
+		Description: truncate(description, maxOptionDescription),
 		Default:     !entry.excluded,
 	}
 }
