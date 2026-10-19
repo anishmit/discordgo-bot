@@ -49,6 +49,8 @@ const (
 	maxOptionDescription = 100
 	emptyLabel           = "\u200b"
 	historyMenuPrefix    = "geminiHistory"
+	historyHeading       = "## History"
+	settingsHeading      = "## Settings"
 	modelMenuID          = "geminiSelectModel"
 	thinkingMenuID       = "geminiSelectThinking"
 	defaultThinkingLevel = "DEFAULT"
@@ -307,8 +309,8 @@ func geminiHistoryComponentHandler(s *discordgo.Session, i *discordgo.Interactio
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Content:    i.Message.Content,
-			Components: historyComponents(i.ChannelID),
+			Flags:      discordgo.MessageFlagsIsComponentsV2,
+			Components: historyComponents(historyMenuRows(i.ChannelID)),
 		},
 	}); err != nil {
 		log.Println("Error responding to interaction", err)
@@ -622,7 +624,12 @@ func channelHistory(channelID string) []interactions.Step {
 	return all
 }
 
-func historyComponents(channelID string) []discordgo.MessageComponent {
+func historyComponents(rows []discordgo.MessageComponent) []discordgo.MessageComponent {
+	components := []discordgo.MessageComponent{discordgo.TextDisplay{Content: historyHeading}}
+	return append(components, rows...)
+}
+
+func historyMenuRows(channelID string) []discordgo.MessageComponent {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	entries := history[channelID]
@@ -637,12 +644,11 @@ func historyComponents(channelID string) []discordgo.MessageComponent {
 		rows = append(rows, discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				discordgo.SelectMenu{
-					MenuType:    discordgo.StringSelectMenu,
-					CustomID:    fmt.Sprintf("%s%d", historyMenuPrefix, len(rows)),
-					Placeholder: "Messages included in the history",
-					MinValues:   genai.Ptr(0),
-					MaxValues:   len(options),
-					Options:     options,
+					MenuType:  discordgo.StringSelectMenu,
+					CustomID:  fmt.Sprintf("%s%d", historyMenuPrefix, len(rows)),
+					MinValues: genai.Ptr(0),
+					MaxValues: len(options),
+					Options:   options,
 				},
 			},
 		})
@@ -1033,15 +1039,16 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	switch topOption.Name {
 	case "settings":
 		data.Components = settingsComponents(i.ChannelID, userID)
-		data.Flags = discordgo.MessageFlagsEphemeral
+		data.Flags = discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2
 	case "history":
-		data.Components = historyComponents(i.ChannelID)
-		if len(data.Components) == 0 {
+		rows := historyMenuRows(i.ChannelID)
+		if len(rows) == 0 {
 			data.Content = "No history for this channel"
 			data.Flags = discordgo.MessageFlagsEphemeral
-		} else {
-			data.Content = "Select the messages to include in the history"
+			break
 		}
+		data.Components = historyComponents(rows)
+		data.Flags = discordgo.MessageFlagsIsComponentsV2
 	case "clear":
 		clearHistory(i.ChannelID)
 		data.Content = "Cleared history for this channel"
@@ -1112,8 +1119,11 @@ func settingsComponents(channelID, userID string) []discordgo.MessageComponent {
 	}
 
 	return []discordgo.MessageComponent{
+		discordgo.TextDisplay{Content: settingsHeading},
 		discordgo.ActionsRow{Components: buttons},
+		discordgo.TextDisplay{Content: "**Model**"},
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{modelMenu(us)}},
+		discordgo.TextDisplay{Content: "**Thinking level**"},
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{thinkingMenu(us)}},
 	}
 }
