@@ -74,7 +74,7 @@ var geminiToggles = []struct {
 	label    string
 	field    func(*userSettings) *bool
 }{
-	{"geminiToggleSearch", "Google search", func(us *userSettings) *bool { return &us.search }},
+	{"geminiToggleSearch", "Google Search", func(us *userSettings) *bool { return &us.search }},
 	{"geminiToggleCode", "Code execution", func(us *userSettings) *bool { return &us.code }},
 	{"geminiToggleUrlContext", "URL context", func(us *userSettings) *bool { return &us.urlContext }},
 	{"geminiToggleMarkdown", "Force markdown", func(us *userSettings) *bool { return &us.markdown }},
