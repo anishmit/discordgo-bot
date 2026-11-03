@@ -3,6 +3,7 @@ package clients
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -47,8 +48,41 @@ func (c streamProbeClient) Do(req *http.Request) (*http.Response, error) {
 		shown = shown[:maxLoggedBody]
 	}
 	log.Printf("Interactions %s %s returned %d %q: %s", req.Method, req.URL.String(), res.StatusCode, contentType, shown)
+	if res.StatusCode >= 400 {
+		if normalized, ok := normalizeErrorBody(body); ok {
+			body = normalized
+		}
+	}
+	res.ContentLength = int64(len(body))
 	res.Body = io.NopCloser(bytes.NewReader(body))
 	return res, nil
+}
+
+func normalizeErrorBody(body []byte) ([]byte, bool) {
+	raw := bytes.TrimSpace(body)
+	if bytes.HasPrefix(raw, []byte("[")) {
+		var elements []json.RawMessage
+		if err := json.Unmarshal(raw, &elements); err != nil || len(elements) != 1 {
+			return nil, false
+		}
+		raw = elements[0]
+	}
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Error.Message == "" {
+		return nil, false
+	}
+	normalized, err := json.Marshal(map[string]map[string]string{
+		"error": {"code": payload.Error.Status, "message": payload.Error.Message},
+	})
+	if err != nil {
+		return nil, false
+	}
+	return normalized, true
 }
 
 func init() {
