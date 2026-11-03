@@ -876,7 +876,7 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
-	res, err := clients.InteractionsClient.Create(
+	res, err := clients.InteractionsClient.Interactions.Create(
 		ctx,
 		operations.CreateInteractionRequest{Body: body},
 		operations.WithAcceptHeaderOverride(operations.AcceptHeaderEnumTextEventStream),
@@ -938,7 +938,7 @@ func finishedInteraction(ctx context.Context, interactionID string) ([]interacti
 	if interactionID == "" {
 		return nil, errors.New("Interaction did not create an ID")
 	}
-	res, err := clients.InteractionsClient.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
+	res, err := clients.InteractionsClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
 	if err != nil {
 		return nil, err
 	}
