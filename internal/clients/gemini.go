@@ -11,23 +11,23 @@ import (
 
 	"google.golang.org/genai"
 	"google.golang.org/genai/interactions"
-	"google.golang.org/genai/interactions/models/components"
 )
 
-const apiVersion = "v1beta"
+const project = "project-df08581e-4836-4320-9ae"
+const location = "global"
 const maxLoggedBody = 4096
 
 var (
 	GeminiClient       *genai.Client
-	InteractionsClient *interactions.GenAI
+	InteractionsClient *interactions.Interactions
 )
 
-type streamProbeClient struct {
-	inner *http.Client
+type probeTransport struct {
+	inner http.RoundTripper
 }
 
-func (c streamProbeClient) Do(req *http.Request) (*http.Response, error) {
-	res, err := c.inner.Do(req)
+func (t probeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	res, err := t.inner.RoundTrip(req)
 	if err != nil || res == nil {
 		return res, err
 	}
@@ -53,20 +53,25 @@ func (c streamProbeClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func init() {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	ctx := context.Background()
 
 	var err error
-	GeminiClient, err = genai.NewClient(context.Background(), &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
+	GeminiClient, err = genai.NewClient(ctx, &genai.ClientConfig{
+		Project:  project,
+		Location: location,
+		Backend:  genai.BackendEnterprise,
 	})
 	if err != nil {
 		log.Fatalln("Failed to create genai client", err)
 	}
 
-	InteractionsClient = interactions.New(
-		interactions.WithAPIVersion(apiVersion),
-		interactions.WithSecurity(components.Security{APIKey: &apiKey}),
-		interactions.WithClient(streamProbeClient{inner: &http.Client{}}),
-	)
+	expressClient, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:     os.Getenv("GEMINI_API_KEY"),
+		Backend:    genai.BackendEnterprise,
+		HTTPClient: &http.Client{Transport: probeTransport{inner: http.DefaultTransport}},
+	})
+	if err != nil {
+		log.Fatalln("Failed to create interactions client", err)
+	}
+	InteractionsClient = expressClient.Interactions
 }
