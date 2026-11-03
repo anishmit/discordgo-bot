@@ -876,11 +876,7 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
-	res, err := clients.InteractionsClient.Interactions.Create(
-		ctx,
-		operations.CreateInteractionRequest{Body: body},
-		operations.WithAcceptHeaderOverride(operations.AcceptHeaderEnumTextEventStream),
-	)
+	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
 	if err != nil {
 		return "", "", 0, err
 	}
