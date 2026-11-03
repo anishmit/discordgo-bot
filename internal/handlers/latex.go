@@ -3,13 +3,10 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/png"
 	"log"
-	"os"
-	"sort"
 	"strconv"
 	"time"
 
@@ -40,7 +37,6 @@ var latexProblems = map[string][]latexProblem{}
 var answersQueue []*discordgo.InteractionCreate
 
 func init() {
-	migrateLatexData()
 	chromedpCtx, _ = chromedp.NewContext(context.Background())
 	err := chromedp.Run(
 		chromedpCtx,
@@ -318,120 +314,4 @@ func equalImages(img1, img2 image.Image) bool {
 		}
 	}
 	return float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy())
-}
-
-// ONE-TIME FIREBASE -> POSTGRES MIGRATION. REMOVE AFTER RUNNING ONCE.
-
-const latexExportPath = "latex-export.json"
-
-type latexExportSolution struct {
-	TimeTaken float64 `json:"timeTaken"`
-	Timestamp int64 `json:"timestamp"`
-	Solution string `json:"solution"`
-	UserID string `json:"userID"`
-}
-
-type latexExportProblem struct {
-	Title string `json:"title"`
-	Solution string `json:"solution"`
-	BestSolution string `json:"bestSolution"`
-	Solutions map[string]latexExportSolution `json:"solutions"`
-}
-
-type latexExport struct {
-	LatexData map[string]latexExportProblem `json:"latexData"`
-}
-
-func migrateLatexData() {
-	ctx := context.Background()
-
-	data, err := os.ReadFile(latexExportPath)
-	if err != nil {
-		log.Fatalln("Migration: error reading export", err)
-	}
-	var export latexExport
-	if err := json.Unmarshal(data, &export); err != nil {
-		log.Fatalln("Migration: error parsing export", err)
-	}
-	if len(export.LatexData) == 0 {
-		log.Fatalln("Migration: export contains no latexData")
-	}
-
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		log.Fatalln("Migration: error starting transaction", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS latex_problems (
-			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			title TEXT NOT NULL,
-			solution TEXT NOT NULL,
-			best_solution TEXT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS latex_solutions (
-			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			problem_id BIGINT NOT NULL REFERENCES latex_problems (id) ON DELETE CASCADE,
-			user_id BIGINT NOT NULL,
-			timestamp_ms BIGINT NOT NULL,
-			time_taken DOUBLE PRECISION NOT NULL,
-			solution TEXT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS latex_solutions_problem_id_idx ON latex_solutions (problem_id);
-	`); err != nil {
-		log.Fatalln("Migration: error creating tables", err)
-	}
-
-	var existingProblems int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM latex_problems`).Scan(&existingProblems); err != nil {
-		log.Fatalln("Migration: error counting problems", err)
-	}
-	if existingProblems > 0 {
-		log.Fatalf("Migration: latex_problems already has %d rows, refusing to run\n", existingProblems)
-	}
-
-	problemKeys := make([]string, 0, len(export.LatexData))
-	for problemKey := range export.LatexData {
-		problemKeys = append(problemKeys, problemKey)
-	}
-	sort.Strings(problemKeys)
-
-	numProblems, numSolutions := 0, 0
-	for _, problemKey := range problemKeys {
-		problem := export.LatexData[problemKey]
-		var problemID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO latex_problems (title, solution, best_solution)
-			VALUES ($1, $2, $3)
-			RETURNING id;
-		`, problem.Title, problem.Solution, problem.BestSolution).Scan(&problemID); err != nil {
-			log.Fatalln("Migration: error inserting problem", problemKey, err)
-		}
-		numProblems++
-		solutionKeys := make([]string, 0, len(problem.Solutions))
-		for solutionKey := range problem.Solutions {
-			solutionKeys = append(solutionKeys, solutionKey)
-		}
-		sort.Strings(solutionKeys)
-		for _, solutionKey := range solutionKeys {
-			solution := problem.Solutions[solutionKey]
-			userID, err := strconv.ParseInt(solution.UserID, 10, 64)
-			if err != nil {
-				log.Fatalln("Migration: error parsing user id", solutionKey, err)
-			}
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO latex_solutions (problem_id, user_id, timestamp_ms, time_taken, solution)
-				VALUES ($1, $2, $3, $4, $5);
-			`, problemID, userID, solution.Timestamp, solution.TimeTaken, solution.Solution); err != nil {
-				log.Fatalln("Migration: error inserting solution", solutionKey, err)
-			}
-			numSolutions++
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		log.Fatalln("Migration: error committing transaction", err)
-	}
-	log.Printf("Migration: inserted %d problems and %d solutions\n", numProblems, numSolutions)
 }
