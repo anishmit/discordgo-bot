@@ -6,12 +6,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"google.golang.org/genai"
 	"google.golang.org/genai/interactions"
-	"google.golang.org/genai/interactions/models/components"
 )
 
 const project = "project-df08581e-4836-4320-9ae"
@@ -54,22 +52,40 @@ func (c streamProbeClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 func init() {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	ctx := context.Background()
 
-	var err error
-	GeminiClient, err = genai.NewClient(context.Background(), &genai.ClientConfig{
+	config := &genai.ClientConfig{
 		Project:  project,
 		Location: location,
 		Backend:  genai.BackendEnterprise,
-	})
+	}
+	var err error
+	GeminiClient, err = genai.NewClient(ctx, config)
 	if err != nil {
 		log.Fatalln("Failed to create genai client", err)
 	}
+	logCredentials(ctx, config)
 
 	InteractionsClient = interactions.New(
 		interactions.WithServerURL("https://aiplatform.googleapis.com/v1beta1/projects/"+project+"/locations"),
 		interactions.WithAPIVersion(location),
-		interactions.WithSecurity(components.Security{APIKey: &apiKey}),
-		interactions.WithClient(streamProbeClient{inner: &http.Client{}}),
+		interactions.WithClient(streamProbeClient{inner: config.HTTPClient}),
 	)
+}
+
+func logCredentials(ctx context.Context, config *genai.ClientConfig) {
+	if config.Credentials == nil {
+		log.Println("Gemini credentials: none resolved, requests will be unauthenticated")
+		return
+	}
+	token, err := config.Credentials.Token(ctx)
+	if err != nil {
+		log.Println("Gemini credentials: failed to mint a token", err)
+		return
+	}
+	quota, err := config.Credentials.QuotaProjectID(ctx)
+	if err != nil {
+		log.Println("Gemini credentials: failed to read the quota project", err)
+	}
+	log.Printf("Gemini credentials: token of %d bytes, quota project %q", len(token.Value), quota)
 }
