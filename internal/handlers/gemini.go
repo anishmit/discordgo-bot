@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	defaultModel         = "gemini-3.8-flash"
+	defaultModel         = "gemini-4-argon"
 	maxMsgLength         = 2000
 	maxEmbedLength       = 4096
 	embedColor           = 0xffffff
@@ -63,9 +63,9 @@ var geminiModels = []struct {
 	label          string
 	thinkingLevels []interactions.ThinkingLevel
 }{
+	{"gemini-4-argon", "Gemini 4 Argon", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
 	{"gemini-3.8-flash", "Gemini 3.8 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
 	{"gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
-	{"gemini-3.1-pro-preview", "Gemini 3.1 Pro", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
 	{"gemini-3-flash-preview", "Gemini 3 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
 }
 
