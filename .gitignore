@@ -1,3 +1,4 @@
 .env
 serviceAccountKey.json
 discordgo-bot
+project-*-default-rtdb-export.json

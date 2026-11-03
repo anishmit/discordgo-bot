@@ -3,44 +3,33 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/png"
+	"log"
+	"os"
+	"sort"
+	"strconv"
+	"time"
+
 	"github.com/bwmarrin/discordgo"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
-	"log"
-	"image"
-	_ "image/png"
-	"time"
-	"github.com/anishmit/discordgo-bot/internal/clients"
-	"math/rand"
-	"firebase.google.com/go/v4/db"
-	"sort"
+
+	"github.com/anishmit/discordgo-bot/internal/database"
 )
 
 type latexProblem struct {
 	title string
-	id string
+	id int64
 	image image.Image
 	createdTime time.Time
 }
 
-type latexDataSolution struct {
-	TimeTaken float64 `json:"timeTaken"`
-	Timestamp int64 `json:"timestamp"`
-	Solution string `json:"solution"`
-	UserID string `json:"userID"`
-}
-
-type latexDataProblem struct {
-	Title string `json:"title"`
-	Solution string `json:"solution"`
-	BestSolution string `json:"bestSolution"`
-	Solutions map[string]latexDataSolution `json:"solutions"`
-}
-
 type latexLeaderboardEntry struct {
-	userID string
+	userID int64
 	timestamp int64
 	wpm float64
 }
@@ -51,6 +40,7 @@ var latexProblems = map[string][]latexProblem{}
 var answersQueue []*discordgo.InteractionCreate
 
 func init() {
+	migrateLatexData()
 	chromedpCtx, _ = chromedp.NewContext(context.Background())
 	err := chromedp.Run(
 		chromedpCtx,
@@ -126,7 +116,6 @@ func latexAnswerCommandHandler(s *discordgo.Session) {
 		return
 	}
 	ctx := context.Background()
-	ref := clients.FirebaseDBClient.NewRef("latexData")
 	newProbs := latexProblems[i.ChannelID][:0]
 	iTime, err := discordgo.SnowflakeTimestamp(i.Interaction.ID)
 	var userID string
@@ -141,26 +130,36 @@ func latexAnswerCommandHandler(s *discordgo.Session) {
 		log.Println("Error getting interaction time", err)
 		return
 	}
+	userIDInt, err := strconv.ParseInt(userID, 10, 64)
+	if err != nil {
+		log.Println("Error parsing user id", err)
+		return
+	}
 	for _, problem := range latexProblems[i.ChannelID] {
 		if equalImages(problem.image, img) {
-			problemRef := ref.Child(problem.id)
-			var bestSolution string
-			problemRef.Child("bestSolution").Transaction(ctx, func(value db.TransactionNode) (any, error) {
-				value.Unmarshal(&bestSolution)
-				if len(bestSolution) > len(latex) {
-					bestSolution = latex
-					return latex, nil
-				} else {
-					return bestSolution, nil
-				}
-			})
 			timeTaken := iTime.Sub(problem.createdTime).Seconds()
-			problemRef.Child("solutions").Push(ctx, latexDataSolution{
-				TimeTaken: timeTaken,
-				Timestamp: iTime.UnixMilli(),
-				Solution: latex,
-				UserID: userID,
-			})
+			var bestSolution string
+			err := database.Pool.QueryRow(ctx, `
+				WITH upd AS (
+					UPDATE latex_problems
+					SET best_solution = CASE
+						WHEN octet_length(best_solution) > octet_length($2::text) THEN $2::text
+						ELSE best_solution
+					END
+					WHERE id = $1::bigint
+					RETURNING id, best_solution
+				)
+				INSERT INTO latex_solutions (problem_id, user_id, timestamp_ms, time_taken, solution)
+				SELECT id, $3::bigint, $4::bigint, $5::double precision, $2::text FROM upd
+				RETURNING (SELECT best_solution FROM upd);
+			`, problem.id, latex, userIDInt, iTime.UnixMilli(), timeTaken).Scan(&bestSolution)
+			if err != nil {
+				log.Println("Error recording solution", err)
+				s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+					Content: "Error recording solution",
+				})
+				continue
+			}
 			s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 				Content: fmt.Sprintf("# Solved %s\nTime Taken: %.2f seconds\nWPM: %.2f\n```latex\n%s```", problem.title, timeTaken, float64(len(bestSolution)) / timeTaken * 12, bestSolution),
 			})
@@ -177,25 +176,12 @@ func latexAnswerCommandHandler(s *discordgo.Session) {
 
 func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ctx := context.Background()
-	// Get problem IDs
-	var latexDataProblemIDs map[string]bool
-	ref := clients.FirebaseDBClient.NewRef("latexData")
-	err := ref.GetShallow(ctx, &latexDataProblemIDs)
-	if err != nil {
-		log.Println("Error getting problem IDs", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Error getting problem IDs",
-		})
-		return
-	}
-	ids := make([]string, 0, len(latexDataProblemIDs))
-	for id := range latexDataProblemIDs {
-		ids = append(ids, id)
-	}
 	// Choose random problem
-	problemID := ids[rand.Intn(len(ids))]
-	var problem latexDataProblem
-	err = ref.Child(problemID).Get(ctx, &problem)
+	var problemID int64
+	var problemTitle, problemSolution string
+	err := database.Pool.QueryRow(ctx, `
+		SELECT id, title, solution FROM latex_problems ORDER BY random() LIMIT 1;
+	`).Scan(&problemID, &problemTitle, &problemSolution)
 	if err != nil {
 		log.Println("Error getting problem", err)
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
@@ -204,7 +190,7 @@ func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 	// Render latex
-	picBuf, renderTime, err := renderLatex(problem.Solution, i.ID)
+	picBuf, renderTime, err := renderLatex(problemSolution, i.ID)
 	if err != nil {
 		log.Println("Failed to render LaTeX", err)
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
@@ -223,7 +209,7 @@ func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	// Send problem
 	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Content: fmt.Sprintf("-# %d ms\n# %s", renderTime, problem.Title),
+		Content: fmt.Sprintf("-# %d ms\n# %s", renderTime, problemTitle),
 		Files: []*discordgo.File{
 			{
 				Name:        "image.png",
@@ -238,7 +224,7 @@ func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	// Add problem to channel slice
 	latexProblems[i.ChannelID] = append(latexProblems[i.ChannelID], latexProblem{
-		title: problem.Title,
+		title: problemTitle,
 		id: problemID,
 		image: img,
 		createdTime: time.Now(),
@@ -247,9 +233,14 @@ func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCr
 
 func latexLeaderboardCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ctx := context.Background()
-	ref := clients.FirebaseDBClient.NewRef("latexData")
-	var latexData map[string]latexDataProblem
-	err := ref.Get(ctx, &latexData)
+	rows, err := database.Pool.Query(ctx, `
+		SELECT s.user_id, s.timestamp_ms, octet_length(p.best_solution)::double precision / s.time_taken * 12 AS wpm
+		FROM latex_solutions s
+		JOIN latex_problems p ON p.id = s.problem_id
+		WHERE s.time_taken > 0
+		ORDER BY wpm DESC
+		LIMIT $1;
+	`, leaderboardLen)
 	if err != nil {
 		log.Println("Error getting latex data", err)
 		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
@@ -257,28 +248,24 @@ func latexLeaderboardCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 		})
 		return
 	}
+	defer rows.Close()
 	var entries []latexLeaderboardEntry
-	for _, problem := range latexData {
-		bestSolLen := len(problem.BestSolution)
-		for _, solution := range problem.Solutions {
-			entries = append(entries, latexLeaderboardEntry{
-				userID: solution.UserID,
-				timestamp: solution.Timestamp,
-				wpm: float64(bestSolLen) / solution.TimeTaken * 12,
-			})
+	for rows.Next() {
+		var entry latexLeaderboardEntry
+		if err := rows.Scan(&entry.userID, &entry.timestamp, &entry.wpm); err != nil {
+			log.Println("Error scanning row", err)
+			continue
 		}
+		entries = append(entries, entry)
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].wpm > entries[j].wpm
-	})
 	var description string
-	for i := range min(leaderboardLen, len(entries)) {
+	for i, entry := range entries {
 		description += fmt.Sprintf(
-			"%d. <@%s>: **%.2f** WPM on <t:%d:d>\n",
+			"%d. <@%d>: **%.2f** WPM on <t:%d:d>\n",
 			i + 1,
-			entries[i].userID,
-			entries[i].wpm,
-			entries[i].timestamp / 1000,
+			entry.userID,
+			entry.wpm,
+			entry.timestamp / 1000,
 		)
 	}
 	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
@@ -304,8 +291,8 @@ func renderLatex(latex string, id string) ([]byte, int64, error) {
 				elem.id = %q;
 				katex.render(%q, elem, {throwOnError: false, displayMode: true});
 				await document.fonts.ready;
-			})();`, id, latex), 
-			nil, 
+			})();`, id, latex),
+			nil,
 			func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 				return p.WithAwaitPromise(true)
 			},
@@ -331,4 +318,120 @@ func equalImages(img1, img2 image.Image) bool {
 		}
 	}
 	return float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy())
+}
+
+// ONE-TIME FIREBASE -> POSTGRES MIGRATION. REMOVE AFTER RUNNING ONCE.
+
+const latexExportPath = "latex-export.json"
+
+type latexExportSolution struct {
+	TimeTaken float64 `json:"timeTaken"`
+	Timestamp int64 `json:"timestamp"`
+	Solution string `json:"solution"`
+	UserID string `json:"userID"`
+}
+
+type latexExportProblem struct {
+	Title string `json:"title"`
+	Solution string `json:"solution"`
+	BestSolution string `json:"bestSolution"`
+	Solutions map[string]latexExportSolution `json:"solutions"`
+}
+
+type latexExport struct {
+	LatexData map[string]latexExportProblem `json:"latexData"`
+}
+
+func migrateLatexData() {
+	ctx := context.Background()
+
+	data, err := os.ReadFile(latexExportPath)
+	if err != nil {
+		log.Fatalln("Migration: error reading export", err)
+	}
+	var export latexExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		log.Fatalln("Migration: error parsing export", err)
+	}
+	if len(export.LatexData) == 0 {
+		log.Fatalln("Migration: export contains no latexData")
+	}
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		log.Fatalln("Migration: error starting transaction", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS latex_problems (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			title TEXT NOT NULL,
+			solution TEXT NOT NULL,
+			best_solution TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS latex_solutions (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			problem_id BIGINT NOT NULL REFERENCES latex_problems (id) ON DELETE CASCADE,
+			user_id BIGINT NOT NULL,
+			timestamp_ms BIGINT NOT NULL,
+			time_taken DOUBLE PRECISION NOT NULL,
+			solution TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS latex_solutions_problem_id_idx ON latex_solutions (problem_id);
+	`); err != nil {
+		log.Fatalln("Migration: error creating tables", err)
+	}
+
+	var existingProblems int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM latex_problems`).Scan(&existingProblems); err != nil {
+		log.Fatalln("Migration: error counting problems", err)
+	}
+	if existingProblems > 0 {
+		log.Fatalf("Migration: latex_problems already has %d rows, refusing to run\n", existingProblems)
+	}
+
+	problemKeys := make([]string, 0, len(export.LatexData))
+	for problemKey := range export.LatexData {
+		problemKeys = append(problemKeys, problemKey)
+	}
+	sort.Strings(problemKeys)
+
+	numProblems, numSolutions := 0, 0
+	for _, problemKey := range problemKeys {
+		problem := export.LatexData[problemKey]
+		var problemID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO latex_problems (title, solution, best_solution)
+			VALUES ($1, $2, $3)
+			RETURNING id;
+		`, problem.Title, problem.Solution, problem.BestSolution).Scan(&problemID); err != nil {
+			log.Fatalln("Migration: error inserting problem", problemKey, err)
+		}
+		numProblems++
+		solutionKeys := make([]string, 0, len(problem.Solutions))
+		for solutionKey := range problem.Solutions {
+			solutionKeys = append(solutionKeys, solutionKey)
+		}
+		sort.Strings(solutionKeys)
+		for _, solutionKey := range solutionKeys {
+			solution := problem.Solutions[solutionKey]
+			userID, err := strconv.ParseInt(solution.UserID, 10, 64)
+			if err != nil {
+				log.Fatalln("Migration: error parsing user id", solutionKey, err)
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO latex_solutions (problem_id, user_id, timestamp_ms, time_taken, solution)
+				VALUES ($1, $2, $3, $4, $5);
+			`, problemID, userID, solution.Timestamp, solution.TimeTaken, solution.Solution); err != nil {
+				log.Fatalln("Migration: error inserting solution", solutionKey, err)
+			}
+			numSolutions++
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Fatalln("Migration: error committing transaction", err)
+	}
+	log.Printf("Migration: inserted %d problems and %d solutions\n", numProblems, numSolutions)
 }
