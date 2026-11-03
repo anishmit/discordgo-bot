@@ -9,7 +9,7 @@ import (
 	"google.golang.org/genai/interactions/retry"
 )
 
-const project = "project-2d1aef35-db7e-45b1-b11"
+const project = "project-df08581e-4836-4320-9ae"
 const location = "global"
 
 var (

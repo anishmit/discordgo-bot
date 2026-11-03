@@ -13,7 +13,7 @@ require (
 	github.com/jonas747/ogg v0.0.0-20161220051205-b4f6f4cf3757
 	github.com/yuin/goldmark v1.8.6
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
-	google.golang.org/genai v1.71.1-0.20260929232617-bfc37d09b5ec
+	google.golang.org/genai v1.77.0
 )
 
 require (
