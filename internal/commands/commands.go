@@ -81,11 +81,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
-				Name:        "history",
-				Description: "Select the messages included in the history",
-			},
-			{
-				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "clear",
 				Description: "Clear the history",
 			},

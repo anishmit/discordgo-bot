@@ -5,34 +5,22 @@ import (
 	"log"
 
 	"google.golang.org/genai"
-	"google.golang.org/genai/interactions"
 )
 
 const project = "project-df08581e-4836-4320-9ae"
 const location = "global"
 
-var (
-	GeminiClient       *genai.Client
-	InteractionsClient *interactions.GenAI
-)
+var GeminiClient *genai.Client
 
 func init() {
-	ctx := context.Background()
-
-	config := &genai.ClientConfig{
-		Project:  project,
-		Location: location,
-		Backend:  genai.BackendEnterprise,
-	}
 	var err error
-	GeminiClient, err = genai.NewClient(ctx, config)
+	GeminiClient, err = genai.NewClient(context.Background(), &genai.ClientConfig{
+		Project:     project,
+		Location:    location,
+		Backend:     genai.BackendEnterprise,
+		HTTPOptions: genai.HTTPOptions{RetryOptions: &genai.HTTPRetryOptions{}},
+	})
 	if err != nil {
 		log.Fatalln("Failed to create genai client", err)
 	}
-
-	InteractionsClient = interactions.New(
-		interactions.WithServerURL("https://aiplatform.googleapis.com/v1beta1/projects/"+project+"/locations"),
-		interactions.WithAPIVersion(location),
-		interactions.WithClient(config.HTTPClient),
-	)
 }

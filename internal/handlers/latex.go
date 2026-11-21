@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
 	"github.com/anishmit/discordgo-bot/internal/database"
@@ -38,16 +38,10 @@ var answersQueue []*discordgo.InteractionCreate
 
 func init() {
 	chromedpCtx, _ = chromedp.NewContext(context.Background())
-	err := chromedp.Run(
+	err := chromedp.Do(
 		chromedpCtx,
 		chromedp.Navigate("about:blank"),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			frameTree, err := page.GetFrameTree().Do(ctx)
-			if err != nil {
-				return err
-			}
-			return page.SetDocumentContent(frameTree.Frame.ID,
-				`<!DOCTYPE html>
+		setDocumentContent(`<!DOCTYPE html>
 				<html>
 					<head>
 						<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
@@ -56,13 +50,23 @@ func init() {
 							.katex { font-size: 2em; }
 						</style>
 					</head>
-				</html>`).Do(ctx)
-		}),
+				</html>`),
 	)
 	if err != nil {
 		log.Fatalln("Failed to run chromedp", err)
 	}
 	registerCommandHandler("latex", latexCommandHandler)
+}
+
+func setDocumentContent(html string) chromedp.Action[chromedp.Void] {
+	return chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		tree, err := cdp.Call(ctx, t, page.GetFrameTree, cdp.Empty{})
+		if err != nil {
+			return err
+		}
+		_, err = cdp.Call(ctx, t, page.SetDocumentContent, page.SetDocumentContentParams{FrameID: tree.FrameTree.Frame.ID, HTML: html})
+		return err
+	})
 }
 
 func latexCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -278,9 +282,9 @@ func latexLeaderboardCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 func renderLatex(latex string, id string) ([]byte, int64, error) {
 	startTime := time.Now()
 	var picBuf []byte
-	err := chromedp.Run(
+	err := chromedp.Do(
 		chromedpCtx,
-		chromedp.Evaluate(
+		chromedp.Evaluate[chromedp.Void](
 			fmt.Sprintf(`(async() =>
 				{elem = document.body.appendChild(document.createElement("div"));
 				elem.style.display = "inline-block";
@@ -288,13 +292,13 @@ func renderLatex(latex string, id string) ([]byte, int64, error) {
 				katex.render(%q, elem, {throwOnError: false, displayMode: true});
 				await document.fonts.ready;
 			})();`, id, latex),
-			nil,
-			func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-				return p.WithAwaitPromise(true)
-			},
+			chromedp.EvalAwaitPromise,
 		),
-		chromedp.Screenshot(fmt.Sprintf(`[id="%s"]`, id), &picBuf),
-		chromedp.Evaluate(fmt.Sprintf("document.getElementById(%q).remove();", id), nil),
+		chromedp.Func(func(ctx context.Context, t *chromedp.Target) (err error) {
+			picBuf, err = chromedp.Screenshot(fmt.Sprintf(`[id="%s"]`, id))(ctx, t)
+			return err
+		}),
+		chromedp.Evaluate[chromedp.Void](fmt.Sprintf("document.getElementById(%q).remove();", id)),
 	)
 	return picBuf, time.Since(startTime).Milliseconds(),err
 }

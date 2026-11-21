@@ -19,9 +19,9 @@ import (
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/bwmarrin/discordgo"
-	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"github.com/yuin/goldmark/extension"
@@ -36,37 +36,32 @@ import (
 )
 
 const (
-	defaultModel         = "gemini-4-argon"
-	maxMsgLength         = 2000
-	maxEmbedLength       = 4096
-	embedColor           = 0xffffff
-	streamEditInterval   = 2 * time.Second
-	thoughtsThreadName   = "Thoughts"
-	threadArchiveMinutes = 1440
-	maxHistoryEntries    = 50
-	maxSelectOptions     = 25
-	maxOptionLabel       = 100
-	maxOptionDescription = 100
-	emptyLabel           = "\u200b"
-	historyMenuPrefix    = "geminiHistory"
-	historyHeading       = "## History"
-	settingsHeading      = "## Settings"
-	modelMenuID          = "geminiSelectModel"
-	thinkingMenuID       = "geminiSelectThinking"
-	defaultThinkingLevel = "default"
-	historyMenus         = (maxHistoryEntries + maxSelectOptions - 1) / maxSelectOptions
-	historyTimeZone      = "America/Los_Angeles"
+	defaultModel           = interactions.ModelGemini4Hydrogen
+	maxMsgLength           = 2000
+	maxEmbedLength         = 4096
+	embedColor             = 0xffffff
+	streamEditInterval     = 2 * time.Second
+	thoughtsThreadName     = "Thoughts"
+	threadArchiveMinutes   = 1440
+	maxHistoryEntries      = 50
+	maxInteractionAttempts = 3
+	interactionRetryDelay  = 2 * time.Second
+	settingsHeading        = "## Settings"
+	modelMenuID            = "geminiSelectModel"
+	thinkingMenuID         = "geminiSelectThinking"
+	defaultThinkingLevel   = "default"
+	historyTimeZone        = "America/Los_Angeles"
 )
 
 var geminiModels = []struct {
-	id             string
+	id             interactions.Model
 	label          string
 	thinkingLevels []interactions.ThinkingLevel
 }{
-	{"gemini-4-argon", "Gemini 4 Argon", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
-	{"gemini-3.8-flash", "Gemini 3.8 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
-	{"gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
-	{"gemini-3-flash-preview", "Gemini 3 Flash", []interactions.ThinkingLevel{interactions.ThinkingLevelMinimal, interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+	{interactions.ModelGemini4Carbon, "Gemini 4 Carbon", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
+	{interactions.ModelGemini4Neon, "Gemini 4 Neon", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh, interactions.ThinkingLevelXhigh}},
+	{interactions.ModelGemini4Hydrogen, "Gemini 4 Hydrogen", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh, interactions.ThinkingLevelXhigh}},
+	{interactions.ModelGemini4Argon, "Gemini 4 Argon", []interactions.ThinkingLevel{interactions.ThinkingLevelLow, interactions.ThinkingLevelMedium, interactions.ThinkingLevelHigh}},
 }
 
 var geminiToggles = []struct {
@@ -245,11 +240,8 @@ type msgRef struct {
 }
 
 type historyEntry struct {
-	msgID    string
-	author   string
-	content  string
-	steps    []interactions.Step
-	excluded bool
+	msgID string
+	steps []interactions.Step
 }
 
 type thoughtsThread struct {
@@ -257,19 +249,22 @@ type thoughtsThread struct {
 	id     string
 }
 
+type interactionFailure struct {
+	error
+}
+
 type userSettings struct {
 	search        bool
 	code          bool
 	urlContext    bool
 	markdown      bool
-	model         string
+	model         interactions.Model
 	thinkingLevel interactions.ThinkingLevel
 }
 
 var (
-	historyMu      sync.Mutex
-	history        = map[string][]historyEntry{}
-	loadedChannels = map[string]bool{}
+	historyMu sync.Mutex
+	history   = map[string][]historyEntry{}
 
 	settingsMu sync.Mutex
 	settings   = map[string]map[string]*userSettings{}
@@ -287,9 +282,6 @@ func init() {
 	registerMessageCreateHandler(geminiMsgCreateHandler)
 	registerMessageUpdateHandler(geminiMsgUpdateHandler)
 	registerCommandHandler("gemini", geminiCommandHandler)
-	for i := range historyMenus {
-		registerComponentHandler(fmt.Sprintf("%s%d", historyMenuPrefix, i), geminiHistoryComponentHandler)
-	}
 	for _, t := range geminiToggles {
 		registerComponentHandler(t.customID, geminiSettingsComponentHandler)
 	}
@@ -297,32 +289,10 @@ func init() {
 	registerComponentHandler(thinkingMenuID, geminiSettingsComponentHandler)
 }
 
-func geminiHistoryComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.MessageComponentData()
-
-	included := map[string]bool{}
-	for _, value := range data.Values {
-		included[value] = true
-	}
-	setExcluded(i.ChannelID, menuOptionValues(i.Message, data.CustomID), included)
-
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Flags:      discordgo.MessageFlagsIsComponentsV2,
-			Components: historyComponents(historyMenuRows(i.ChannelID)),
-		},
-	}); err != nil {
-		log.Println("Error responding to interaction", err)
-	}
-}
-
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID || (m.Content == "" && len(m.Attachments) == 0) {
 		return
 	}
-
-	loadHistory(s, m.ChannelID, m.ID)
 
 	entry, err := messageEntry(s, m.Message)
 	if err != nil {
@@ -358,12 +328,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), text, shouldRender(us, text))
-	appendHistory(m.ChannelID, historyEntry{
-		msgID:   msg.ID,
-		author:  displayName(msg),
-		content: text,
-		steps:   turnSteps,
-	})
+	appendHistory(m.ChannelID, historyEntry{msgID: msg.ID, steps: turnSteps})
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
@@ -419,23 +384,10 @@ func messageEntry(s *discordgo.Session, m *discordgo.Message) (historyEntry, err
 			media = append(media, content)
 		}
 	}
-	author := displayName(m)
-	var step interactions.Step
-	if m.Author.ID == s.State.User.ID {
-		step = interactions.NewStep(interactions.ModelOutputStep{
-			Content: append([]interactions.Content{textContent(text)}, media...),
-		})
-	} else {
-		step = interactions.NewStep(interactions.UserInputStep{
-			Content: logEntry(m.ID, author, m.Author.ID, text, media),
-		})
-	}
-	return historyEntry{
-		msgID:   m.ID,
-		author:  author,
-		content: text,
-		steps:   []interactions.Step{step},
-	}, nil
+	step := interactions.NewStep(interactions.UserInputStep{
+		Content: logEntry(m.ID, displayName(m), m.Author.ID, text, media),
+	})
+	return historyEntry{msgID: m.ID, steps: []interactions.Step{step}}, nil
 }
 
 func textContent(text string) interactions.Content {
@@ -514,10 +466,7 @@ func displayName(m *discordgo.Message) string {
 	if m.Member != nil && m.Member.Nick != "" {
 		return m.Member.Nick
 	}
-	if m.Author.GlobalName != "" {
-		return m.Author.GlobalName
-	}
-	return m.Author.Username
+	return m.Author.DisplayName()
 }
 
 func appendHistory(channelID string, entry historyEntry) {
@@ -534,7 +483,6 @@ func updateHistory(channelID string, entry historyEntry) {
 	defer historyMu.Unlock()
 	for i := range history[channelID] {
 		if history[channelID][i].msgID == entry.msgID {
-			entry.excluded = history[channelID][i].excluded
 			history[channelID][i] = entry
 			return
 		}
@@ -545,70 +493,6 @@ func clearHistory(channelID string) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	delete(history, channelID)
-	loadedChannels[channelID] = true
-}
-
-func markLoaded(channelID string) bool {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	if loadedChannels[channelID] {
-		return false
-	}
-	loadedChannels[channelID] = true
-	return true
-}
-
-func unmarkLoaded(channelID string) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	delete(loadedChannels, channelID)
-}
-
-func loadHistory(s *discordgo.Session, channelID, beforeID string) {
-	if !markLoaded(channelID) {
-		return
-	}
-	msgs, err := s.ChannelMessages(channelID, maxHistoryEntries, beforeID, "", "")
-	if err != nil {
-		log.Println("Error fetching channel messages", err)
-		unmarkLoaded(channelID)
-		return
-	}
-
-	entries := make([]historyEntry, 0, len(msgs))
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Author == nil || (m.Content == "" && len(m.Attachments) == 0) {
-			continue
-		}
-		entry, err := messageEntry(s, m)
-		if err != nil {
-			log.Println("Error building history entry", err)
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	mergeHistory(channelID, entries)
-}
-
-func mergeHistory(channelID string, entries []historyEntry) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	existing := map[string]bool{}
-	for _, e := range history[channelID] {
-		existing[e.msgID] = true
-	}
-
-	var merged []historyEntry
-	for _, entry := range entries {
-		if !existing[entry.msgID] {
-			merged = append(merged, entry)
-		}
-	}
-	history[channelID] = append(merged, history[channelID]...)
-	if n := len(history[channelID]); n > maxHistoryEntries {
-		history[channelID] = history[channelID][n-maxHistoryEntries:]
-	}
 }
 
 func channelHistory(channelID string) []interactions.Step {
@@ -616,97 +500,14 @@ func channelHistory(channelID string) []interactions.Step {
 	defer historyMu.Unlock()
 	var all []interactions.Step
 	for _, e := range history[channelID] {
-		if e.excluded {
-			continue
-		}
 		all = append(all, e.steps...)
 	}
 	return all
 }
 
-func historyComponents(rows []discordgo.MessageComponent) []discordgo.MessageComponent {
-	components := []discordgo.MessageComponent{discordgo.TextDisplay{Content: historyHeading}}
-	return append(components, rows...)
-}
-
-func historyMenuRows(channelID string) []discordgo.MessageComponent {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	entries := history[channelID]
-
-	var rows []discordgo.MessageComponent
-	for start := 0; start < len(entries); start += maxSelectOptions {
-		chunk := entries[start:min(start+maxSelectOptions, len(entries))]
-		options := make([]discordgo.SelectMenuOption, len(chunk))
-		for i, entry := range chunk {
-			options[i] = historyOption(entry)
-		}
-		rows = append(rows, discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.SelectMenu{
-					MenuType:  discordgo.StringSelectMenu,
-					CustomID:  fmt.Sprintf("%s%d", historyMenuPrefix, len(rows)),
-					MinValues: genai.Ptr(0),
-					MaxValues: len(options),
-					Options:   options,
-				},
-			},
-		})
-	}
-	return rows
-}
-
-func historyOption(entry historyEntry) discordgo.SelectMenuOption {
-	label := truncate(entry.content, maxOptionLabel)
-	if label == "" {
-		label = emptyLabel
-	}
-	description := entry.author
-	if timestamp, err := discordgo.SnowflakeTimestamp(entry.msgID); err == nil {
-		description = fmt.Sprintf("%s • %s", entry.author, timestamp.In(timeZone).Format("1/2 3:04pm"))
-	}
-	return discordgo.SelectMenuOption{
-		Label:       label,
-		Value:       entry.msgID,
-		Description: truncate(description, maxOptionDescription),
-		Default:     !entry.excluded,
-	}
-}
-
-func setExcluded(channelID string, covered, included map[string]bool) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	for i := range history[channelID] {
-		entry := &history[channelID][i]
-		if covered[entry.msgID] {
-			entry.excluded = !included[entry.msgID]
-		}
-	}
-}
-
-func menuOptionValues(m *discordgo.Message, customID string) map[string]bool {
-	covered := map[string]bool{}
-	for _, component := range m.Components {
-		row, ok := component.(*discordgo.ActionsRow)
-		if !ok {
-			continue
-		}
-		for _, rowComponent := range row.Components {
-			menu, ok := rowComponent.(*discordgo.SelectMenu)
-			if !ok || menu.CustomID != customID {
-				continue
-			}
-			for _, option := range menu.Options {
-				covered[option.Value] = true
-			}
-		}
-	}
-	return covered
-}
-
 func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
-		Model:             interactions.Model(us.model),
+		Model:             us.model,
 		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
@@ -718,14 +519,16 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	var answerText strings.Builder
 	var totalTokens int
 	for {
-		interactionID, text, tokens, err := streamInteraction(ctx, s, create, answer, thoughts, us)
+		var interactionID, text string
+		var steps []interactions.Step
+		err := retryInteraction(ctx, func() (err error) {
+			interactionID, text, totalTokens, err = streamInteraction(ctx, s, create, answer, thoughts, us)
+			if err == nil {
+				steps, err = finishedInteraction(ctx, interactionID)
+			}
+			return err
+		})
 		answerText.WriteString(text)
-		totalTokens = tokens
-		if err != nil {
-			return answerText.String(), nil, totalTokens, err
-		}
-
-		steps, err := finishedInteraction(ctx, interactionID)
 		if err != nil {
 			return answerText.String(), nil, totalTokens, err
 		}
@@ -744,15 +547,29 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	}
 }
 
+func retryInteraction(ctx context.Context, attempt func() error) error {
+	for n := 1; ; n++ {
+		err := attempt()
+		var failure interactionFailure
+		if !errors.As(err, &failure) || n == maxInteractionAttempts {
+			return err
+		}
+		log.Printf("Retrying interaction after attempt %d: %v", n, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(n) * interactionRetryDelay):
+		}
+	}
+}
+
 func functionResult(ctx context.Context, s *discordgo.Session, guildID string, call *interactions.FunctionCallStep) interactions.FunctionResultStep {
 	output, isError := dispatchTool(ctx, s, guildID, call)
 	return interactions.FunctionResultStep{
 		CallID:  call.ID,
 		Name:    genai.Ptr(call.Name),
 		IsError: genai.Ptr(isError),
-		Result: interactions.NewFunctionResultStepResultUnion([]interactions.FunctionResultSubcontent{
-			interactions.NewFunctionResultSubcontent(interactions.TextContent{Text: output}),
-		}),
+		Result:  interactions.NewFunctionResultStepResultUnion(output),
 	}
 }
 
@@ -856,27 +673,12 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []map[string]any
-	fields := rows.FieldDescriptions()
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return nil, err
-		}
-		row := make(map[string]any, len(fields))
-		for i, fd := range fields {
-			row[string(fd.Name)] = values[i]
-		}
-		results = append(results, row)
-	}
-	return results, nil
+	return pgx.CollectRows(rows, pgx.RowToMap)
 }
 func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
-	res, err := clients.InteractionsClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
+	res, err := clients.GeminiClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -918,27 +720,46 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 		}
 		if errorEvent := event.GetDataError(); errorEvent != nil {
 			if msg := errorEvent.Error.GetMessage(); msg != nil {
-				return "", text.String(), totalTokens, errors.New(*msg)
+				return "", text.String(), totalTokens, interactionFailure{errors.New(*msg)}
 			}
-			return "", text.String(), totalTokens, errors.New("Stream errored")
+			return "", text.String(), totalTokens, interactionFailure{errors.New("Stream errored")}
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
 			editMessage(s, answer, thinkingSubtext(us), text.String(), shouldRender(us, text.String()))
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
-	return interactionID, text.String(), totalTokens, stream.Err()
+	if err := stream.Err(); err != nil {
+		return "", text.String(), totalTokens, interactionFailure{err}
+	}
+	return interactionID, text.String(), totalTokens, nil
 }
 
 func finishedInteraction(ctx context.Context, interactionID string) ([]interactions.Step, error) {
 	if interactionID == "" {
 		return nil, errors.New("Interaction did not create an ID")
 	}
-	res, err := clients.InteractionsClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
+	res, err := clients.GeminiClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
 	if err != nil {
 		return nil, err
 	}
+	if res.Interaction.GetStatus() == interactions.InteractionStatusFailed {
+		return nil, interactionFailure{interactionError(res.Interaction.GetErrors())}
+	}
 	return res.Interaction.GetSteps(), nil
+}
+
+func interactionError(faults []interactions.Error) error {
+	var messages []string
+	for _, fault := range faults {
+		if msg := fault.GetMessage(); msg != nil {
+			messages = append(messages, *msg)
+		}
+	}
+	if len(messages) == 0 {
+		return errors.New("Interaction failed")
+	}
+	return errors.New(strings.Join(messages, "\n"))
 }
 
 func turnSteps(steps []interactions.Step) []interactions.Step {
@@ -1042,15 +863,6 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	case "settings":
 		data.Components = settingsComponents(i.ChannelID, userID)
 		data.Flags = discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2
-	case "history":
-		rows := historyMenuRows(i.ChannelID)
-		if len(rows) == 0 {
-			data.Content = "No history for this channel"
-			data.Flags = discordgo.MessageFlagsEphemeral
-			break
-		}
-		data.Components = historyComponents(rows)
-		data.Flags = discordgo.MessageFlagsIsComponentsV2
 	case "clear":
 		clearHistory(i.ChannelID)
 		data.Content = "Cleared history for this channel"
@@ -1135,7 +947,7 @@ func modelMenu(us *userSettings) discordgo.SelectMenu {
 	for _, m := range geminiModels {
 		options = append(options, discordgo.SelectMenuOption{
 			Label:   m.label,
-			Value:   m.id,
+			Value:   string(m.id),
 			Default: m.id == us.model,
 		})
 	}
@@ -1170,7 +982,7 @@ func thinkingMenu(us *userSettings) discordgo.SelectMenu {
 	}
 }
 
-func thinkingLevels(model string) []interactions.ThinkingLevel {
+func thinkingLevels(model interactions.Model) []interactions.ThinkingLevel {
 	for _, m := range geminiModels {
 		if m.id == model {
 			return m.thinkingLevels
@@ -1179,9 +991,14 @@ func thinkingLevels(model string) []interactions.ThinkingLevel {
 	return nil
 }
 
-func setModel(us *userSettings, model string) {
+func setModel(us *userSettings, value string) {
+	model := interactions.Model(value)
+	levels := thinkingLevels(model)
+	if levels == nil {
+		return
+	}
 	us.model = model
-	if us.thinkingLevel != "" && !slices.Contains(thinkingLevels(model), us.thinkingLevel) {
+	if us.thinkingLevel != "" && !slices.Contains(levels, us.thinkingLevel) {
 		us.thinkingLevel = ""
 	}
 }
@@ -1304,19 +1121,8 @@ func renderMarkdown(text string) ([]byte, error) {
 <style>table{border-collapse:collapse;width:100%%}th,td{border:1px solid black;padding:8px;text-align:left}</style>
 </head><body><div id="markdown" style="display:inline-block;padding:1px;">%s</div></body></html>`, htmlBuf.String())
 
-	var png []byte
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate("about:blank"),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			frameTree, err := page.GetFrameTree().Do(ctx)
-			if err != nil {
-				return err
-			}
-			return page.SetDocumentContent(frameTree.Frame.ID, document).Do(ctx)
-		}),
-		chromedp.Screenshot("#markdown", &png),
-	); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate("about:blank"), setDocumentContent(document)); err != nil {
 		return nil, err
 	}
-	return png, nil
+	return chromedp.Run(ctx, chromedp.Screenshot("#markdown"))
 }

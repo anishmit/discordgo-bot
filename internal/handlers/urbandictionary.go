@@ -19,6 +19,7 @@ const (
 	udColor           = 0xff8000
 	udNoResultsColor  = 0xff0000
 	udWrittenOnLayout = "2006-01-02T15:04:05.000Z"
+	emptyLabel        = "\u200b"
 )
 
 type udDefinition struct {
