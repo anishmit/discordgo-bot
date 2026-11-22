@@ -7,6 +7,7 @@ import (
 	"log"
 	"github.com/anishmit/discordgo-bot/internal/handlers"
 	"github.com/anishmit/discordgo-bot/internal/commands"
+	"github.com/anishmit/discordgo-bot/internal/google"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -21,6 +22,8 @@ func init() {
 }
 
 func main() {
+	google.Start()
+
 	s.AddHandler(handlers.OnInteractionCreate)
 	s.AddHandler(handlers.OnMessageCreate)
 	s.AddHandler(handlers.OnMessageUpdate)
@@ -40,4 +43,5 @@ func main() {
 	log.Println("Press Ctrl+C to exit")
 	<-stop
 	log.Println("Gracefully shutting down.")
+	google.Close()
 }

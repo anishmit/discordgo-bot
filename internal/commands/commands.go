@@ -72,6 +72,10 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
+		Name:        "credits",
+		Description: "Show Google Cloud credits for the bot's billing account",
+	},
+	{
 		Name:        "gemini",
 		Description: "Configure Gemini settings",
 		Options: []*discordgo.ApplicationCommandOption{
