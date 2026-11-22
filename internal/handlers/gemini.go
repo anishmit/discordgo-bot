@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/bwmarrin/discordgo"
@@ -40,7 +41,8 @@ const (
 	maxMsgLength           = 2000
 	maxEmbedLength         = 4096
 	embedColor             = 0xffffff
-	streamEditInterval     = 2 * time.Second
+	streamEditInterval     = 3 * time.Second
+	thoughtSendInterval    = 3 * time.Second
 	thoughtsThreadName     = "Thoughts"
 	threadArchiveMinutes   = 1440
 	maxHistoryEntries      = 50
@@ -244,7 +246,12 @@ type historyEntry struct {
 
 type thoughtsThread struct {
 	answer msgRef
-	id     string
+
+	mu        sync.Mutex
+	id        string
+	pending   []string
+	lastSent  time.Time
+	scheduled bool
 }
 
 type interactionFailure struct {
@@ -682,7 +689,7 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 			}
 			if thoughtDelta := stepDelta.GetDeltaThoughtSummary(); thoughtDelta != nil {
 				if content := thoughtDelta.GetContentText(); content != nil {
-					thoughts.send(s, content.GetText())
+					thoughts.add(s, content.GetText())
 				}
 			}
 		}
@@ -1028,10 +1035,34 @@ func setThinkingLevel(us *userSettings, value string) {
 	us.normalize()
 }
 
-func (t *thoughtsThread) send(s *discordgo.Session, thought string) {
+func (t *thoughtsThread) add(s *discordgo.Session, thought string) {
+	thought = strings.TrimSpace(thought)
 	if thought == "" {
 		return
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pending = append(t.pending, thought)
+	if t.scheduled {
+		return
+	}
+	if wait := thoughtSendInterval - time.Since(t.lastSent); wait > 0 {
+		t.scheduled = true
+		time.AfterFunc(wait, func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.scheduled = false
+			t.flush(s)
+		})
+		return
+	}
+	t.flush(s)
+}
+
+// flush must be called with t.mu held.
+func (t *thoughtsThread) flush(s *discordgo.Session) {
+	msgs := combineThoughts(t.pending)
+	t.pending, t.lastSent = nil, time.Now()
 	if t.id == "" {
 		thread, err := s.MessageThreadStart(t.answer.channelID, t.answer.messageID, thoughtsThreadName, threadArchiveMinutes)
 		if err != nil {
@@ -1040,9 +1071,27 @@ func (t *thoughtsThread) send(s *discordgo.Session, thought string) {
 		}
 		t.id = thread.ID
 	}
-	if _, err := s.ChannelMessageSend(t.id, truncate(thought, maxMsgLength)); err != nil {
-		log.Println("Error sending thought", err)
+	for _, msg := range msgs {
+		if _, err := s.ChannelMessageSend(t.id, msg); err != nil {
+			log.Println("Error sending thought", err)
+		}
 	}
+}
+
+func combineThoughts(thoughts []string) []string {
+	const sep = "\n\n"
+	var msgs []string
+	for _, thought := range thoughts {
+		thought = truncate(thought, maxMsgLength)
+		if n := len(msgs); n > 0 {
+			if joined := msgs[n-1] + sep + thought; utf8.RuneCountInString(joined) <= maxMsgLength {
+				msgs[n-1] = joined
+				continue
+			}
+		}
+		msgs = append(msgs, thought)
+	}
+	return msgs
 }
 
 func truncate(text string, limit int) string {
