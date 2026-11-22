@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	creditsColor    = 0x34A853
-	creditsTimeout  = 45 * time.Second
-	maxEndedCredits = 5
+	creditsColor   = 0x34A853
+	creditsTimeout = 45 * time.Second
+	maxCredits     = 10
 )
 
 type credit struct {
@@ -152,43 +152,25 @@ func creditsComponents(credits []credit, now time.Time) []discordgo.MessageCompo
 	}
 	slices.SortFunc(active, func(a, b credit) int { return a.End.Compare(b.End) })
 	slices.SortFunc(ended, func(a, b credit) int { return b.End.Compare(a.End) })
+	credits = append(active, ended...)
 
-	summary := "No active credits."
-	if len(active) > 0 {
-		var total float64
-		for _, c := range active {
-			total += c.Remaining.amount()
+	components := []discordgo.MessageComponent{discordgo.TextDisplay{Content: "## GCP Credits"}}
+	for _, c := range credits[:min(len(credits), maxCredits)] {
+		var expiry string
+		switch {
+		case c.End.IsZero():
+			expiry = "Doesn't expire"
+		case c.End.After(now):
+			expiry = fmt.Sprintf("Expires <t:%d:D> (<t:%d:R>)", c.End.Unix(), c.End.Unix())
+		default:
+			expiry = fmt.Sprintf("Expired <t:%d:D>", c.End.Unix())
 		}
-		noun := "credits"
-		if len(active) == 1 {
-			noun = "credit"
-		}
-		summary = fmt.Sprintf("**%s** left in %d active %s.", dollars(total), len(active), noun)
+		components = append(components, discordgo.Separator{}, discordgo.TextDisplay{
+			Content: fmt.Sprintf("**%s**\n%s of %s left\n%s", c.Name, dollars(c.Remaining.amount()), dollars(c.Value.amount()), expiry),
+		})
 	}
-	components := []discordgo.MessageComponent{discordgo.TextDisplay{Content: "## GCP Credits\n" + summary}}
-
-	if len(active) > 0 {
-		entries := make([]string, len(active))
-		for n, c := range active {
-			expiry := "doesn't expire"
-			if !c.End.IsZero() {
-				expiry = fmt.Sprintf("expires <t:%d:D> (<t:%d:R>)", c.End.Unix(), c.End.Unix())
-			}
-			entries[n] = fmt.Sprintf("**%s**\n%s left of %s · %s", c.Name, dollars(c.Remaining.amount()), dollars(c.Value.amount()), expiry)
-		}
-		components = append(components, discordgo.Separator{}, discordgo.TextDisplay{Content: strings.Join(entries, "\n\n")})
-	}
-
-	if len(ended) > 0 {
-		var lines []string
-		for _, c := range ended[:min(len(ended), maxEndedCredits)] {
-			lines = append(lines, fmt.Sprintf("-# %s ended <t:%d:D> with %s of %s left", c.Name, c.End.Unix(), dollars(c.Remaining.amount()), dollars(c.Value.amount())))
-		}
-		if older := len(ended) - maxEndedCredits; older > 0 {
-			lines = append(lines, fmt.Sprintf("-# …and %d older ones", older))
-		}
-		lines = append(lines, "-# Ended credits may have been converted into a newer credit rather than forfeited.")
-		components = append(components, discordgo.Separator{}, discordgo.TextDisplay{Content: strings.Join(lines, "\n")})
+	if more := len(credits) - maxCredits; more > 0 {
+		components = append(components, discordgo.Separator{}, discordgo.TextDisplay{Content: fmt.Sprintf("-# …and %d more", more)})
 	}
 	return components
 }
