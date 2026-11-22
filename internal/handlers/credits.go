@@ -67,7 +67,6 @@ func creditsCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
 	})
 	if err != nil {
 		log.Println("Error deferring interaction", err)
@@ -79,11 +78,11 @@ func creditsCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate)
 	credits, err := fetchCredits(ctx, account)
 	if err != nil {
 		log.Println("Error fetching GCP credits", err)
-		followup(s, i, &discordgo.WebhookParams{Content: creditsErrorText(err), Flags: discordgo.MessageFlagsEphemeral})
+		followup(s, i, &discordgo.WebhookParams{Content: creditsErrorText(err)})
 		return
 	}
 	followup(s, i, &discordgo.WebhookParams{
-		Flags:           discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2,
+		Flags:           discordgo.MessageFlagsIsComponentsV2,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 		Components: []discordgo.MessageComponent{discordgo.Container{
 			AccentColor: new(creditsColor),
