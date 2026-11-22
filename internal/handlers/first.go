@@ -1,59 +1,58 @@
 package handlers
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/anishmit/discordgo-bot/internal/database"
 )
 
-const resultsWindow = 5 * time.Second
-
-var midnightResultsScheduled sync.Map
-
-func snowflakeForTime(t time.Time) string {
-	return strconv.FormatInt((t.UnixMilli()-discordEpoch)<<timestampShift, 10)
-}
+const (
+	curTimeZone   = "America/Los_Angeles"
+	guildID       = "407302806241017866"
+	channelID     = "407302806241017868"
+	resultsWindow = 5 * time.Second
+)
 
 type timePeriod struct {
 	name string
 	days int
 }
 
-const (
-	curTimeZone = "America/Los_Angeles"
-	guildID     = "407302806241017866"
-	channelID   = "407302806241017868"
-)
+type firstCount struct {
+	userID int64
+	count  int
+}
 
 var (
-	timePeriods = [5]timePeriod{
+	curLocation = loadLocation(curTimeZone)
+	timePeriods = []timePeriod{
 		{name: "Today", days: 1},
 		{name: "Past Week", days: 7},
 		{name: "Past Month", days: 30},
 		{name: "Past Year", days: 365},
-		{name: "All Time", days: 1e9},
+		{name: "All Time"},
 	}
-	curLocation *time.Location
+	midnightResultsScheduled sync.Map
 )
 
 func init() {
-	var err error
-	curLocation, err = time.LoadLocation(curTimeZone)
-	if err != nil {
-		log.Fatalln("Error loading location", err)
-	}
-
 	registerCommandHandler("first", firstCommandHandler)
 	registerMessageCreateHandler(firstMessageCreateHandler)
+}
+
+func snowflakeForTime(t time.Time) string {
+	return strconv.FormatInt((t.UnixMilli()-discordEpoch)<<timestampShift, 10)
 }
 
 func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -61,190 +60,170 @@ func firstCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 
-	ctx := context.Background()
-
-	curTime, err := discordgo.SnowflakeTimestamp(i.Interaction.ID)
+	now, err := discordgo.SnowflakeTimestamp(i.ID)
 	if err != nil {
-		log.Println("Error getting interaction time", err)
+		followupError(s, i, "Error getting interaction time", err)
 		return
 	}
-	today := curTime.In(curLocation).Format(time.DateOnly)
-
-	// One row per user, with a count per time period computed in SQL.
-	var sb strings.Builder
-	sb.WriteString("SELECT user_id")
-	for _, tp := range timePeriods {
-		if tp.days >= 1e6 {
-			sb.WriteString(", count(*)")
-		} else {
-			fmt.Fprintf(&sb, ", count(*) FILTER (WHERE iso_date >= $1::date - %d)", tp.days-1)
-		}
-	}
-	sb.WriteString(" FROM first_messages WHERE iso_date <= $1::date GROUP BY user_id")
-
-	rows, err := database.Pool.Query(ctx, sb.String(), today)
+	leaderboards, err := firstLeaderboards(now)
 	if err != nil {
-		log.Println("Error reading from database", err)
+		followupError(s, i, "Error reading from database", err)
 		return
 	}
-	defer rows.Close()
 
-	var timePeriodsData [len(timePeriods)]map[int64]int
-	for i := range timePeriodsData {
-		timePeriodsData[i] = map[int64]int{}
+	fields := make([]*discordgo.MessageEmbedField, len(timePeriods))
+	for p, leaderboard := range leaderboards {
+		var value strings.Builder
+		for _, c := range leaderboard {
+			fmt.Fprintf(&value, "<@%d>: %d\n", c.userID, c.count)
+		}
+		fields[p] = &discordgo.MessageEmbedField{Name: timePeriods[p].name, Value: value.String()}
 	}
-	for rows.Next() {
-		var userID int64
-		var counts [len(timePeriods)]int
-		dest := []any{&userID}
-		for i := range counts {
-			dest = append(dest, &counts[i])
-		}
-		if err := rows.Scan(dest...); err != nil {
-			log.Println("Error scanning row", err)
-			continue
-		}
-		for i, count := range counts {
-			if count > 0 {
-				timePeriodsData[i][userID] = count
-			}
-		}
-	}
-
-	fields := make([]*discordgo.MessageEmbedField, 0, len(timePeriods))
-	for i, timePeriodData := range timePeriodsData {
-		userIDs := make([]int64, 0, len(timePeriodData))
-		for userID := range timePeriodData {
-			userIDs = append(userIDs, userID)
-		}
-		sort.Slice(userIDs, func(a, b int) bool {
-			return timePeriodData[userIDs[a]] > timePeriodData[userIDs[b]]
-		})
-		var fieldValue strings.Builder
-		for _, userID := range userIDs {
-			fmt.Fprintf(&fieldValue, "<@%d>: %d\n", userID, timePeriodData[userID])
-		}
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  timePeriods[i].name,
-			Value: fieldValue.String(),
-		})
-	}
-
-	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Embeds: []*discordgo.MessageEmbed{
-			{
-				Title:  "First Leaderboard",
-				Color:  0xff4d01,
-				Fields: fields,
-			},
-		},
+	followup(s, i, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{{
+			Title:  "First Leaderboard",
+			Color:  0xff4d01,
+			Fields: fields,
+		}},
 	})
 }
 
-func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.ChannelID == channelID {
-		curTime, err := discordgo.SnowflakeTimestamp(m.ID)
-		if err != nil {
-			log.Println("Error getting message time", err)
-			return
+func firstLeaderboards(now time.Time) ([][]firstCount, error) {
+	query := "SELECT user_id"
+	for _, tp := range timePeriods {
+		if tp.days == 0 {
+			query += ", count(*)"
+		} else {
+			query += fmt.Sprintf(", count(*) FILTER (WHERE iso_date > $1::date - %d)", tp.days)
 		}
-		curTime = curTime.In(curLocation)
-		isoDate := curTime.Format(time.DateOnly)
-		dayStart, _ := time.ParseInLocation(time.DateOnly, isoDate, curLocation)
-		speed := curTime.UnixMilli() - dayStart.UnixMilli()
-		ctx := context.Background()
-		msgID, err := strconv.ParseInt(m.ID, 10, 64)
-		if err != nil {
-			log.Println("Error parsing message id", err)
-			return
-		}
-		userID, err := strconv.ParseInt(m.Author.ID, 10, 64)
-		if err != nil {
-			log.Println("Error parsing user id", err)
-			return
-		}
-		query := `
-			INSERT INTO first_messages (iso_date, content, timestamp_ms, message_id, timezone, user_id, speed)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (iso_date) DO UPDATE
-			SET content = EXCLUDED.content,
-				timestamp_ms = EXCLUDED.timestamp_ms,
-				message_id = EXCLUDED.message_id,
-				timezone = EXCLUDED.timezone,
-				user_id = EXCLUDED.user_id,
-				speed = EXCLUDED.speed
-			WHERE EXCLUDED.message_id < first_messages.message_id;
-		`
-		_, err = database.Pool.Exec(ctx, query, isoDate, m.Content, curTime.UnixMilli(), msgID, curTimeZone, userID, speed)
-		if err != nil {
-			log.Println("Error executing database insert", err)
-		}
+	}
+	query += " FROM first_messages WHERE iso_date <= $1::date GROUP BY user_id"
 
-		if speed < resultsWindow.Milliseconds() {
-			if _, loaded := midnightResultsScheduled.LoadOrStore(isoDate, true); !loaded {
-				go runMidnightResults(s, dayStart)
+	rows, err := database.Pool.Query(context.Background(), query, now.In(curLocation).Format(time.DateOnly))
+	if err != nil {
+		return nil, err
+	}
+
+	var userID int64
+	counts := make([]int, len(timePeriods))
+	scans := []any{&userID}
+	for p := range counts {
+		scans = append(scans, &counts[p])
+	}
+	leaderboards := make([][]firstCount, len(timePeriods))
+	_, err = pgx.ForEachRow(rows, scans, func() error {
+		for p, count := range counts {
+			if count > 0 {
+				leaderboards[p] = append(leaderboards[p], firstCount{userID, count})
 			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, leaderboard := range leaderboards {
+		slices.SortFunc(leaderboard, func(a, b firstCount) int {
+			return cmp.Compare(b.count, a.count)
+		})
+	}
+	return leaderboards, nil
+}
+
+func firstMessageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.ChannelID != channelID {
+		return
+	}
+	sentAt, err := discordgo.SnowflakeTimestamp(m.ID)
+	if err != nil {
+		log.Println("Error getting message time", err)
+		return
+	}
+	msgID, err := strconv.ParseInt(m.ID, 10, 64)
+	if err != nil {
+		log.Println("Error parsing message id", err)
+		return
+	}
+	userID, err := strconv.ParseInt(m.Author.ID, 10, 64)
+	if err != nil {
+		log.Println("Error parsing user id", err)
+		return
+	}
+
+	sentAt = sentAt.In(curLocation)
+	year, month, day := sentAt.Date()
+	midnight := time.Date(year, month, day, 0, 0, 0, 0, curLocation)
+	isoDate := midnight.Format(time.DateOnly)
+	speed := sentAt.Sub(midnight)
+
+	_, err = database.Pool.Exec(context.Background(), `
+		INSERT INTO first_messages (iso_date, content, timestamp_ms, message_id, timezone, user_id, speed)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (iso_date) DO UPDATE
+		SET content = EXCLUDED.content,
+			timestamp_ms = EXCLUDED.timestamp_ms,
+			message_id = EXCLUDED.message_id,
+			timezone = EXCLUDED.timezone,
+			user_id = EXCLUDED.user_id,
+			speed = EXCLUDED.speed
+		WHERE EXCLUDED.message_id < first_messages.message_id
+	`, isoDate, m.Content, sentAt.UnixMilli(), msgID, curTimeZone, userID, speed.Milliseconds())
+	if err != nil {
+		log.Println("Error executing database insert", err)
+	}
+
+	if speed < resultsWindow {
+		if _, scheduled := midnightResultsScheduled.LoadOrStore(isoDate, true); !scheduled {
+			go runMidnightResults(s, midnight)
 		}
 	}
 }
 
 func runMidnightResults(s *discordgo.Session, midnight time.Time) {
-	fireAt := midnight.Add(resultsWindow)
-	time.Sleep(time.Until(fireAt))
+	end := midnight.Add(resultsWindow)
+	time.Sleep(time.Until(end))
 
-	after := snowflakeForTime(midnight.Add(-resultsWindow))
-	upperBound := midnight.Add(resultsWindow)
-
-	msgs, err := s.ChannelMessages(channelID, 100, "", after, "")
+	msgs, err := s.ChannelMessages(channelID, channelMessagesLimit, "", snowflakeForTime(midnight.Add(-resultsWindow)), "")
 	if err != nil {
 		log.Println("Error fetching results messages", err)
 		return
 	}
 
-	type entry struct {
+	type result struct {
 		msg    *discordgo.Message
-		offset int64
+		offset time.Duration
 	}
-	entries := make([]entry, 0, len(msgs))
+	var results []result
 	for _, msg := range msgs {
 		t, err := discordgo.SnowflakeTimestamp(msg.ID)
-		if err != nil {
+		if err != nil || t.After(end) {
 			continue
 		}
-		t = t.In(curLocation)
-		if t.After(upperBound) {
-			continue
-		}
-		entries = append(entries, entry{msg: msg, offset: t.UnixMilli() - midnight.UnixMilli()})
+		results = append(results, result{msg, t.Sub(midnight)})
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].offset > entries[j].offset
+	if len(results) == 0 {
+		return
+	}
+	slices.SortFunc(results, func(a, b result) int {
+		return cmp.Compare(b.offset, a.offset)
 	})
 
 	winner := -1
-	for i, e := range entries {
-		if e.offset >= 0 {
+	for i, r := range results {
+		if r.offset >= 0 {
 			winner = i
 		}
 	}
 
 	var content strings.Builder
-	for i, e := range entries {
-		line := fmt.Sprintf("[`%+d ms`](https://discord.com/channels/%s/%s/%s) — <@%s>", e.offset, guildID, channelID, e.msg.ID, e.msg.Author.ID)
+	for i, r := range results {
 		if i == winner {
-			line = "# " + line
+			content.WriteString("# ")
 		}
-		content.WriteString(line)
-		content.WriteByte('\n')
+		fmt.Fprintf(&content, "[`%+d ms`](https://discord.com/channels/%s/%s/%s) — <@%s>\n", r.offset.Milliseconds(), guildID, channelID, r.msg.ID, r.msg.Author.ID)
 	}
-
-	if content.Len() == 0 {
-		return
-	}
-
-	_, err = s.ChannelMessageSend(channelID, content.String())
-	if err != nil {
+	if _, err := s.ChannelMessageSend(channelID, content.String()); err != nil {
 		log.Println("Error sending results message", err)
 	}
 }

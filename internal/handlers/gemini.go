@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -12,7 +13,6 @@ import (
 	"mime"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	defaultModel           = interactions.ModelGemini4Hydrogen
+	defaultModel           = interactions.ModelGemini4Neon
 	maxMsgLength           = 2000
 	maxEmbedLength         = 4096
 	embedColor             = 0xffffff
@@ -46,7 +46,10 @@ const (
 	maxHistoryEntries      = 50
 	maxInteractionAttempts = 3
 	interactionRetryDelay  = 2 * time.Second
+	maxMediaBytes          = 20 << 20
+	mediaFetchTimeout      = 30 * time.Second
 	settingsHeading        = "## Settings"
+	settingsFlags          = discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2
 	modelMenuID            = "geminiSelectModel"
 	thinkingMenuID         = "geminiSelectThinking"
 	defaultThinkingLevel   = "default"
@@ -69,10 +72,10 @@ var geminiToggles = []struct {
 	label    string
 	field    func(*userSettings) *bool
 }{
-	{"geminiToggleSearch", "Google Search", func(us *userSettings) *bool { return &us.search }},
-	{"geminiToggleCode", "Code execution", func(us *userSettings) *bool { return &us.code }},
-	{"geminiToggleUrlContext", "URL context", func(us *userSettings) *bool { return &us.urlContext }},
-	{"geminiToggleMarkdown", "Force markdown", func(us *userSettings) *bool { return &us.markdown }},
+	{"geminiToggleSearch", "Google Search", func(us *userSettings) *bool { return &us.Search }},
+	{"geminiToggleCode", "Code execution", func(us *userSettings) *bool { return &us.Code }},
+	{"geminiToggleUrlContext", "URL context", func(us *userSettings) *bool { return &us.URLContext }},
+	{"geminiToggleMarkdown", "Force markdown", func(us *userSettings) *bool { return &us.Markdown }},
 }
 
 var markdownRenderer = goldmark.New(
@@ -93,6 +96,18 @@ var (
 )
 
 var delimiter = uuid.NewString()
+
+var mediaClient = &http.Client{Timeout: mediaFetchTimeout}
+
+var mediaTypeAliases = map[string]string{
+	"video/quicktime": "video/mov",
+	"video/x-msvideo": "video/avi",
+	"video/x-ms-wmv":  "video/wmv",
+	"audio/x-wav":     "audio/wav",
+	"audio/wave":      "audio/wav",
+	"audio/mp4":       "audio/m4a",
+	"audio/x-m4a":     "audio/m4a",
+}
 
 var timeZone = loadLocation(historyTimeZone)
 
@@ -153,58 +168,45 @@ var systemInstructionFmt = `- You are a chatbot inside a Discord text channel. Y
 var geminiFunctions = []interactions.Function{
 	{
 		Name: genai.Ptr("first_msgs"),
-		Description: genai.Ptr(`Gets information about winning "first messages" by making a SELECT SQL query to the database.
-The data is stored in a single table called first_messages, where each row represents the winning "first message" sent on a specific calendar day.
-Available columns:
-1. iso_date (date): The exact calendar date the message was sent, formatted as YYYY-MM-DD. This is the primary key.
-2. content (text): The actual text content of the message.
-3. timestamp_ms (bigint): The exact time the message was sent, recorded as a Unix millisecond number.
-4. message_id (bigint): Discord's ID for the specific message.
-5. timezone (varchar): The timezone used to determine when the day started (e.g., 'America/Los_Angeles').
-6. user_id (bigint): Discord's ID for the user who sent the message.
-7. speed (bigint): The reaction time, recorded in milliseconds, representing how quickly the user sent the message after the new day officially began.`),
+		Description: genai.Ptr(`Runs a SELECT query on the first_messages table, which has one row per day for that day's winning "first message".
+Use it for questions about first message winners, times, or speeds.
+Columns:
+- iso_date (date): Day of the message as YYYY-MM-DD, the primary key
+- content (text): Text of the message
+- timestamp_ms (bigint): Time the message was sent, in Unix milliseconds
+- message_id (bigint): Discord ID of the message
+- timezone (varchar): Time zone that sets when the day starts, such as 'America/Los_Angeles'
+- user_id (bigint): Discord ID of the sender
+- speed (bigint): Milliseconds between the start of the day and the message`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query": stringSchema("SELECT SQL query to make to the database"),
+			"query": stringSchema("SELECT query to run on first_messages"),
 		}),
 	},
 	{
 		Name: genai.Ptr("search_messages_sql"),
-		Description: genai.Ptr(`Searches the channel message history by making a SELECT SQL query to the database.
-The data is stored in a single table called messages, where each row is one message that was sent in the channel.
-There are MILLIONS of rows, so you must always narrow your queries: filter with a WHERE clause and/or include a LIMIT.
-Only use this function when you need to look back on messages outside of your provided chat log.
-Available columns:
-1. message_id (bigint): Discord's ID for the specific message. This is the primary key.
-2. user_id (bigint): Discord's ID for the user who sent the message.
-3. timestamp_ms (bigint): The exact time the message was sent, recorded as a Unix millisecond number.
-4. content (text): The actual text content of the message. May be empty (e.g. for messages that only had attachments). To search for a word or phrase, filter with "content ILIKE '%word%'"; a trigram index backs this column, so case-insensitive substring matches stay fast even across millions of rows.`),
+		Description: genai.Ptr(`Runs a SELECT query on the messages table, which has one row per message sent in the channel.
+Use it for messages outside the chat log, such as counts or exact words. The table has millions of rows, so always filter with WHERE or add a LIMIT.
+Columns:
+- message_id (bigint): Discord ID of the message, the primary key
+- user_id (bigint): Discord ID of the sender
+- timestamp_ms (bigint): Time the message was sent, in Unix milliseconds
+- content (text): Text of the message, indexed for fast ILIKE '%word%' searches and empty if it only had attachments`),
 		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query": stringSchema("SELECT SQL query to make to the database"),
-		}),
-	},
-	{
-		Name: genai.Ptr("search_messages_semantic"),
-		Description: genai.Ptr(`Searches the channel message history by meaning using vector embeddings.
-Use this when you need messages that match by meaning rather than keywords. For exact keyword lookups, use the "search_messages_sql" tool instead.
-Messages are grouped into conversation chunks (consecutive messages within a 30-minute window). 
-Each result is one chunk and includes the text, the time range, and the participant user IDs.
-Each line within a chunk's text is formatted as "[YYYY-MM-DD HH:MM] <@user_id>: content" with timestamps in UTC.
-Only use this function when you need to look back on messages outside of your provided chat log.`),
-		Parameters: objectSchema([]string{"query"}, map[string]any{
-			"query":    stringSchema("Natural-language description of what to search for"),
-			"limit":    intSchema("The maximum number of chunks to return (defaults to 10)"),
-			"user_id":  stringSchema("If set, only return chunks that this Discord user ID participated in"),
-			"start_ms": intSchema("If set, only return chunks whose conversation ended at or after this Unix millisecond time"),
-			"end_ms":   intSchema("If set, only return chunks whose conversation started at or before this Unix millisecond time"),
+			"query": stringSchema("SELECT query to run on messages"),
 		}),
 	},
 	{
 		Name: genai.Ptr("get_user"),
-		Description: genai.Ptr(`Looks up a Discord user by their ID.
-It returns the user's username, global display name (if they have one), and whether the account is a bot. 
-If the user sent the message from a server, it also returns when they joined and their server nickname (if they have one).`),
+		Description: genai.Ptr(`Looks up a Discord user by ID.
+Use it to identify a user ID or to check when someone joined the server.
+Returns:
+- username (string): Unique account name
+- global_name (string): Display name, empty if not set
+- bot (boolean): Whether the account is a bot
+- joined_at (string): Time the user joined the server, only in servers
+- nick (string): Nickname in the server, only if set`),
 		Parameters: objectSchema([]string{"user_id"}, map[string]any{
-			"user_id": stringSchema("Discord user ID to look up"),
+			"user_id": stringSchema("Discord ID of the user"),
 		}),
 	},
 }
@@ -215,10 +217,6 @@ func objectSchema(required []string, properties map[string]any) map[string]any {
 
 func stringSchema(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
-}
-
-func intSchema(description string) map[string]any {
-	return map[string]any{"type": "integer", "description": description}
 }
 
 var safetySettings = []interactions.SafetySetting{
@@ -254,12 +252,12 @@ type interactionFailure struct {
 }
 
 type userSettings struct {
-	search        bool
-	code          bool
-	urlContext    bool
-	markdown      bool
-	model         interactions.Model
-	thinkingLevel interactions.ThinkingLevel
+	Search        bool                       `json:"search"`
+	Code          bool                       `json:"code"`
+	URLContext    bool                       `json:"url_context"`
+	Markdown      bool                       `json:"markdown"`
+	Model         interactions.Model         `json:"model"`
+	ThinkingLevel interactions.ThinkingLevel `json:"thinking_level"`
 }
 
 var (
@@ -267,7 +265,6 @@ var (
 	history   = map[string][]historyEntry{}
 
 	settingsMu sync.Mutex
-	settings   = map[string]map[string]*userSettings{}
 )
 
 func loadLocation(name string) *time.Location {
@@ -279,6 +276,7 @@ func loadLocation(name string) *time.Location {
 }
 
 func init() {
+	registerReadyHandler(geminiReadyHandler)
 	registerMessageCreateHandler(geminiMsgCreateHandler)
 	registerMessageUpdateHandler(geminiMsgUpdateHandler)
 	registerCommandHandler("gemini", geminiCommandHandler)
@@ -305,9 +303,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	settingsMu.Lock()
-	us := *userSettingsFor(m.ChannelID, m.Author.ID)
-	settingsMu.Unlock()
+	us := mentionSettings(m.ChannelID, m.Author.ID)
 
 	startTime := time.Now()
 	msg, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
@@ -321,7 +317,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	answer := msgRef{channelID: m.ChannelID, messageID: msg.ID}
 
-	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, answer, &thoughtsThread{answer: answer}, us)
+	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, m.ID, answer, &thoughtsThread{answer: answer}, us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
@@ -380,7 +376,7 @@ func messageEntry(s *discordgo.Session, m *discordgo.Message) (historyEntry, err
 		if url == "" {
 			continue
 		}
-		if content, ok := fetchMedia(url, ""); ok {
+		if content, ok := fetchMedia(url, ""); ok && content.Type != interactions.ContentTypeText {
 			media = append(media, content)
 		}
 	}
@@ -413,16 +409,24 @@ func embedMediaURL(e *discordgo.MessageEmbed) string {
 }
 
 func fetchMedia(url, contentType string) (interactions.Content, bool) {
-	res, err := http.Get(url)
+	res, err := mediaClient.Get(url)
 	if err != nil {
 		log.Println("Error fetching media", err)
 		return interactions.Content{}, false
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		log.Println("Error fetching media", res.Status)
+		return interactions.Content{}, false
+	}
 
-	data, err := io.ReadAll(res.Body)
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxMediaBytes+1))
 	if err != nil {
 		log.Println("Error reading media", err)
+		return interactions.Content{}, false
+	}
+	if len(data) > maxMediaBytes {
+		log.Printf("Skipping media larger than %d bytes", maxMediaBytes)
 		return interactions.Content{}, false
 	}
 
@@ -438,6 +442,9 @@ func fetchMedia(url, contentType string) (interactions.Content, bool) {
 }
 
 func mediaContent(mediaType string, data []byte) (interactions.Content, bool) {
+	if alias, ok := mediaTypeAliases[mediaType]; ok {
+		mediaType = alias
+	}
 	if imageType := interactions.ImageContentMimeType(mediaType); imageType.IsExact() {
 		return interactions.NewContent(interactions.ImageContent{Data: base64Pointer(data), MimeType: &imageType}), true
 	}
@@ -472,10 +479,15 @@ func displayName(m *discordgo.Message) string {
 func appendHistory(channelID string, entry historyEntry) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[channelID] = append(history[channelID], entry)
-	if n := len(history[channelID]); n > maxHistoryEntries {
-		history[channelID] = history[channelID][n-maxHistoryEntries:]
+	entries := history[channelID]
+	i, _ := slices.BinarySearchFunc(entries, entry.msgID, func(e historyEntry, id string) int {
+		return compareSnowflakes(e.msgID, id)
+	})
+	entries = slices.Insert(entries, i, entry)
+	if n := len(entries); n > maxHistoryEntries {
+		entries = entries[n-maxHistoryEntries:]
 	}
+	history[channelID] = entries
 }
 
 func updateHistory(channelID string, entry historyEntry) {
@@ -495,20 +507,27 @@ func clearHistory(channelID string) {
 	delete(history, channelID)
 }
 
-func channelHistory(channelID string) []interactions.Step {
+func channelHistory(channelID, upToID string) []interactions.Step {
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	var all []interactions.Step
 	for _, e := range history[channelID] {
+		if compareSnowflakes(e.msgID, upToID) > 0 {
+			break
+		}
 		all = append(all, e.steps...)
 	}
 	return all
 }
 
-func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID string, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, []interactions.Step, int, error) {
+func compareSnowflakes(a, b string) int {
+	return cmp.Or(cmp.Compare(len(a), len(b)), strings.Compare(a, b))
+}
+
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID, mentionID string, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
-		Model:             us.model,
-		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID))),
+		Model:             us.Model,
+		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID, mentionID))),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
 		Tools:             enabledTools(us),
@@ -518,11 +537,14 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 
 	var answerText strings.Builder
 	var totalTokens int
+	var turn []interactions.Step
 	for {
 		var interactionID, text string
 		var steps []interactions.Step
 		err := retryInteraction(ctx, func() (err error) {
-			interactionID, text, totalTokens, err = streamInteraction(ctx, s, create, answer, thoughts, us)
+			var tokens int
+			interactionID, text, tokens, err = streamInteraction(ctx, s, create, answer, thoughts, us)
+			totalTokens += tokens
 			if err == nil {
 				steps, err = finishedInteraction(ctx, interactionID)
 			}
@@ -533,14 +555,19 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 			return answerText.String(), nil, totalTokens, err
 		}
 
+		steps = roundSteps(steps)
+		turn = append(turn, steps...)
 		var results []interactions.Step
-		for _, call := range pendingCalls(steps) {
-			log.Printf("Calling function %s", call.Name)
-			results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
+		for _, step := range steps {
+			if call := step.FunctionCallStep; call != nil {
+				log.Printf("Calling function %s", call.Name)
+				results = append(results, interactions.NewStep(functionResult(ctx, s, guildID, call)))
+			}
 		}
 		if len(results) == 0 {
-			return answerText.String(), turnSteps(steps), totalTokens, nil
+			return answerText.String(), turn, totalTokens, nil
 		}
+		turn = append(turn, results...)
 
 		create.PreviousInteractionID = genai.Ptr(interactionID)
 		create.Input = genai.Ptr(interactions.NewInteractionsInput(results))
@@ -579,9 +606,6 @@ func dispatchTool(ctx context.Context, s *discordgo.Session, guildID string, cal
 		query, _ := call.Arguments["query"].(string)
 		rows, err := queryDb(ctx, query)
 		return toolResult(rows, err)
-	case "search_messages_semantic":
-		chunks, err := searchMessagesSemantic(ctx, call.Arguments)
-		return toolResult(chunks, err)
 	default:
 		userID, _ := call.Arguments["user_id"].(string)
 		user, err := lookupUser(s, guildID, userID)
@@ -621,53 +645,6 @@ func lookupUser(s *discordgo.Session, guildID, userID string) (map[string]any, e
 	return output, nil
 }
 
-func searchMessagesSemantic(ctx context.Context, args map[string]any) ([]map[string]any, error) {
-	query, _ := args["query"].(string)
-	if query == "" {
-		return nil, errors.New("query is required")
-	}
-
-	dim := int32(embedDims)
-	res, err := clients.GeminiClient.Models.EmbedContent(ctx, embedModel,
-		[]*genai.Content{genai.NewContentFromText(query, genai.RoleUser)},
-		&genai.EmbedContentConfig{TaskType: "RETRIEVAL_QUERY", OutputDimensionality: &dim})
-	if err != nil {
-		return nil, err
-	}
-	queryVec := vectorString(normalize(res.Embeddings[0].Values))
-
-	limit := 10
-	if v, ok := args["limit"].(float64); ok && int(v) > 0 {
-		limit = int(v)
-	}
-
-	sql := `SELECT start_ms, end_ms, user_ids, content FROM message_chunks`
-	conds := []string{}
-	params := []any{}
-	if userID, ok := args["user_id"].(string); ok && userID != "" {
-		id, err := strconv.ParseInt(userID, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid user_id: %w", err)
-		}
-		params = append(params, id)
-		conds = append(conds, fmt.Sprintf("user_ids @> ARRAY[$%d]::bigint[]", len(params)))
-	}
-	if v, ok := args["start_ms"].(float64); ok {
-		params = append(params, int64(v))
-		conds = append(conds, fmt.Sprintf("end_ms >= $%d", len(params)))
-	}
-	if v, ok := args["end_ms"].(float64); ok {
-		params = append(params, int64(v))
-		conds = append(conds, fmt.Sprintf("start_ms <= $%d", len(params)))
-	}
-	if len(conds) > 0 {
-		sql += " WHERE " + strings.Join(conds, " AND ")
-	}
-	params = append(params, queryVec)
-	sql += fmt.Sprintf(" ORDER BY embedding <#> $%d::halfvec LIMIT %d", len(params), limit)
-
-	return queryDb(ctx, sql, params...)
-}
 func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
 	rows, err := database.Pool.Query(ctx, query, args...)
 	if err != nil {
@@ -762,10 +739,10 @@ func interactionError(faults []interactions.Error) error {
 	return errors.New(strings.Join(messages, "\n"))
 }
 
-func turnSteps(steps []interactions.Step) []interactions.Step {
+func roundSteps(steps []interactions.Step) []interactions.Step {
 	start := 0
 	for i, step := range steps {
-		if step.UserInputStep != nil {
+		if step.UserInputStep != nil || step.FunctionResultStep != nil {
 			start = i + 1
 		}
 	}
@@ -793,38 +770,68 @@ func nonEmptyContents(contents []interactions.Content) []interactions.Content {
 	return kept
 }
 
-func pendingCalls(steps []interactions.Step) []*interactions.FunctionCallStep {
-	answered := map[string]bool{}
-	for _, step := range steps {
-		if result := step.FunctionResultStep; result != nil {
-			answered[result.CallID] = true
-		}
-	}
-	var calls []*interactions.FunctionCallStep
-	for _, step := range steps {
-		if call := step.FunctionCallStep; call != nil && !answered[call.ID] {
-			calls = append(calls, call)
-		}
-	}
-	return calls
-}
+const (
+	createSettingsSQL = `CREATE TABLE IF NOT EXISTS gemini_settings (
+	channel_id bigint NOT NULL,
+	user_id bigint NOT NULL,
+	settings jsonb NOT NULL,
+	PRIMARY KEY (channel_id, user_id)
+)`
+	selectSettingsSQL = `SELECT settings FROM gemini_settings WHERE channel_id = $1 AND user_id = $2`
+	insertSettingsSQL = `INSERT INTO gemini_settings (channel_id, user_id, settings) VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO NOTHING`
+	upsertSettingsSQL = `INSERT INTO gemini_settings (channel_id, user_id, settings) VALUES ($1, $2, $3) ON CONFLICT (channel_id, user_id) DO UPDATE SET settings = EXCLUDED.settings`
+)
 
-func defaultUserSettings() *userSettings {
-	return &userSettings{
-		search:     true,
-		urlContext: true,
-		model:      defaultModel,
+func geminiReadyHandler(s *discordgo.Session, r *discordgo.Ready) {
+	if _, err := database.Pool.Exec(context.Background(), createSettingsSQL); err != nil {
+		log.Println("Error creating gemini settings table", err)
 	}
 }
 
-func userSettingsFor(channelID, userID string) *userSettings {
-	if settings[channelID] == nil {
-		settings[channelID] = map[string]*userSettings{}
+func defaultUserSettings() userSettings {
+	return userSettings{Search: true, URLContext: true, Model: defaultModel}
+}
+
+func (us *userSettings) normalize() {
+	if thinkingLevels(us.Model) == nil {
+		us.Model = defaultModel
 	}
-	if settings[channelID][userID] == nil {
-		settings[channelID][userID] = defaultUserSettings()
+	if us.ThinkingLevel != "" && !slices.Contains(thinkingLevels(us.Model), us.ThinkingLevel) {
+		us.ThinkingLevel = ""
 	}
-	return settings[channelID][userID]
+}
+
+func loadSettings(ctx context.Context, channelID, userID string) (userSettings, bool, error) {
+	var data []byte
+	err := database.Pool.QueryRow(ctx, selectSettingsSQL, channelID, userID).Scan(&data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return defaultUserSettings(), false, nil
+	}
+	if err != nil {
+		return defaultUserSettings(), false, err
+	}
+	us := defaultUserSettings()
+	if err := json.Unmarshal(data, &us); err != nil {
+		log.Println("Error decoding gemini settings", err)
+		return defaultUserSettings(), false, nil
+	}
+	us.normalize()
+	return us, true, nil
+}
+
+func mentionSettings(channelID, userID string) userSettings {
+	ctx := context.Background()
+	us, saved, err := loadSettings(ctx, channelID, userID)
+	if err != nil {
+		log.Println("Error loading gemini settings", err)
+		return us
+	}
+	if !saved {
+		if _, err := database.Pool.Exec(ctx, insertSettingsSQL, channelID, userID, us); err != nil {
+			log.Println("Error saving gemini settings", err)
+		}
+	}
+	return us
 }
 
 func enabledTools(us userSettings) []interactions.Tool {
@@ -832,13 +839,13 @@ func enabledTools(us userSettings) []interactions.Tool {
 	for _, function := range geminiFunctions {
 		tools = append(tools, interactions.NewTool(function))
 	}
-	if us.search {
+	if us.Search {
 		tools = append(tools, interactions.NewTool(interactions.GoogleSearch{}))
 	}
-	if us.code {
+	if us.Code {
 		tools = append(tools, interactions.NewTool(interactions.CodeExecution{}))
 	}
-	if us.urlContext {
+	if us.URLContext {
 		tools = append(tools, interactions.NewTool(interactions.URLContext{}))
 	}
 	return tools
@@ -861,8 +868,15 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	data := &discordgo.InteractionResponseData{}
 	switch topOption.Name {
 	case "settings":
-		data.Components = settingsComponents(i.ChannelID, userID)
-		data.Flags = discordgo.MessageFlagsEphemeral | discordgo.MessageFlagsIsComponentsV2
+		us, _, err := loadSettings(context.Background(), i.ChannelID, userID)
+		if err != nil {
+			log.Println("Error loading gemini settings", err)
+			data.Content = "Couldn't load your settings, try again later"
+			data.Flags = discordgo.MessageFlagsEphemeral
+			break
+		}
+		data.Components = settingsComponents(us)
+		data.Flags = settingsFlags
 	case "clear":
 		clearHistory(i.ChannelID)
 		data.Content = "Cleared history for this channel"
@@ -880,12 +894,35 @@ func geminiCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) 
 }
 
 func geminiSettingsComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	ctx := context.Background()
 	userID := interactionUserID(i)
-	customID := i.MessageComponentData().CustomID
-	values := i.MessageComponentData().Values
+	data := i.MessageComponentData()
 
 	settingsMu.Lock()
-	us := userSettingsFor(i.ChannelID, userID)
+	us, _, err := loadSettings(ctx, i.ChannelID, userID)
+	if err == nil {
+		applySetting(&us, data.CustomID, data.Values)
+		_, err = database.Pool.Exec(ctx, upsertSettingsSQL, i.ChannelID, userID, us)
+	}
+	settingsMu.Unlock()
+
+	response := &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{Flags: settingsFlags, Components: settingsComponents(us)},
+	}
+	if err != nil {
+		log.Println("Error updating gemini settings", err)
+		response = &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{Content: "Couldn't save your settings, try again later", Flags: discordgo.MessageFlagsEphemeral},
+		}
+	}
+	if err := s.InteractionRespond(i.Interaction, response); err != nil {
+		log.Println("Error responding to interaction", err)
+	}
+}
+
+func applySetting(us *userSettings, customID string, values []string) {
 	switch customID {
 	case modelMenuID:
 		if len(values) > 0 {
@@ -903,24 +940,12 @@ func geminiSettingsComponentHandler(s *discordgo.Session, i *discordgo.Interacti
 			}
 		}
 	}
-	settingsMu.Unlock()
-
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{Components: settingsComponents(i.ChannelID, userID)},
-	}); err != nil {
-		log.Println("Error responding to interaction", err)
-	}
 }
 
-func settingsComponents(channelID, userID string) []discordgo.MessageComponent {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
-	us := userSettingsFor(channelID, userID)
-
+func settingsComponents(us userSettings) []discordgo.MessageComponent {
 	buttons := make([]discordgo.MessageComponent, 0, len(geminiToggles))
 	for _, t := range geminiToggles {
-		on := *t.field(us)
+		on := *t.field(&us)
 		style := discordgo.DangerButton
 		if on {
 			style = discordgo.SuccessButton
@@ -942,13 +967,13 @@ func settingsComponents(channelID, userID string) []discordgo.MessageComponent {
 	}
 }
 
-func modelMenu(us *userSettings) discordgo.SelectMenu {
+func modelMenu(us userSettings) discordgo.SelectMenu {
 	options := make([]discordgo.SelectMenuOption, 0, len(geminiModels))
 	for _, m := range geminiModels {
 		options = append(options, discordgo.SelectMenuOption{
 			Label:   m.label,
 			Value:   string(m.id),
-			Default: m.id == us.model,
+			Default: m.id == us.Model,
 		})
 	}
 	return discordgo.SelectMenu{
@@ -960,17 +985,17 @@ func modelMenu(us *userSettings) discordgo.SelectMenu {
 	}
 }
 
-func thinkingMenu(us *userSettings) discordgo.SelectMenu {
+func thinkingMenu(us userSettings) discordgo.SelectMenu {
 	options := []discordgo.SelectMenuOption{{
 		Label:   "Default",
 		Value:   defaultThinkingLevel,
-		Default: us.thinkingLevel == "",
+		Default: us.ThinkingLevel == "",
 	}}
-	for _, level := range thinkingLevels(us.model) {
+	for _, level := range thinkingLevels(us.Model) {
 		options = append(options, discordgo.SelectMenuOption{
 			Label:   strings.ToUpper(string(level)[:1]) + string(level)[1:],
 			Value:   string(level),
-			Default: level == us.thinkingLevel,
+			Default: level == us.ThinkingLevel,
 		})
 	}
 	return discordgo.SelectMenu{
@@ -992,24 +1017,15 @@ func thinkingLevels(model interactions.Model) []interactions.ThinkingLevel {
 }
 
 func setModel(us *userSettings, value string) {
-	model := interactions.Model(value)
-	levels := thinkingLevels(model)
-	if levels == nil {
-		return
-	}
-	us.model = model
-	if us.thinkingLevel != "" && !slices.Contains(levels, us.thinkingLevel) {
-		us.thinkingLevel = ""
+	if model := interactions.Model(value); thinkingLevels(model) != nil {
+		us.Model = model
+		us.normalize()
 	}
 }
 
 func setThinkingLevel(us *userSettings, value string) {
-	level := interactions.ThinkingLevel(value)
-	if !slices.Contains(thinkingLevels(us.model), level) {
-		us.thinkingLevel = ""
-		return
-	}
-	us.thinkingLevel = level
+	us.ThinkingLevel = interactions.ThinkingLevel(value)
+	us.normalize()
 }
 
 func (t *thoughtsThread) send(s *discordgo.Session, thought string) {
@@ -1036,18 +1052,18 @@ func truncate(text string, limit int) string {
 
 func generationConfig(us userSettings) *interactions.GenerationConfig {
 	config := &interactions.GenerationConfig{ThinkingSummaries: interactions.ThinkingSummariesAuto.ToPointer()}
-	if us.thinkingLevel != "" {
-		config.ThinkingLevel = us.thinkingLevel.ToPointer()
+	if us.ThinkingLevel != "" {
+		config.ThinkingLevel = us.ThinkingLevel.ToPointer()
 	}
 	return config
 }
 
 func modelSubtext(us userSettings) string {
 	level := "default"
-	if us.thinkingLevel != "" {
-		level = string(us.thinkingLevel)
+	if us.ThinkingLevel != "" {
+		level = string(us.ThinkingLevel)
 	}
-	return fmt.Sprintf("🤖 %s    🧠 %s", us.model, level)
+	return fmt.Sprintf("🤖 %s    🧠 %s", us.Model, level)
 }
 
 func thinkingSubtext(us userSettings) string {
@@ -1059,7 +1075,7 @@ func doneSubtext(us userSettings, elapsed time.Duration, totalTokens int) string
 }
 
 func shouldRender(us userSettings, text string) bool {
-	return text != "" && (us.markdown || len(text) > maxEmbedLength)
+	return text != "" && (us.Markdown || len(text) > maxEmbedLength)
 }
 
 func editMessage(s *discordgo.Session, ref msgRef, subtext, text string, render bool) {

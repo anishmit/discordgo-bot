@@ -3,56 +3,68 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
-	_ "image/png"
+	"image/png"
 	"log"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/anishmit/discordgo-bot/internal/database"
 )
 
+const (
+	latexColor          = 0xC27C0E
+	latexLeaderboardLen = 15
+	latexMatchThreshold = 0.961
+	latexRenderTimeout  = 10 * time.Second
+)
+
+const latexDocument = `<!DOCTYPE html>
+<html>
+	<head>
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+		<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+		<style>
+			.katex { font-size: 2em; }
+		</style>
+	</head>
+	<body><div id="latex" style="display: inline-block"></div></body>
+</html>`
+
 type latexProblem struct {
-	title string
-	id int64
-	image image.Image
+	id          int64
+	title       string
+	image       image.Image
 	createdTime time.Time
 }
 
 type latexLeaderboardEntry struct {
-	userID int64
-	timestamp int64
-	wpm float64
+	UserID    int64
+	Timestamp int64
+	WPM       float64
 }
 
-const leaderboardLen = 15
-var chromedpCtx context.Context
-var latexProblems = map[string][]latexProblem{}
-var answersQueue []*discordgo.InteractionCreate
+var (
+	chromedpCtx   context.Context
+	latexRenderMu sync.Mutex
+
+	latexProblemsMu sync.Mutex
+	latexProblems   = map[string][]latexProblem{}
+)
 
 func init() {
 	chromedpCtx, _ = chromedp.NewContext(context.Background())
-	err := chromedp.Do(
-		chromedpCtx,
-		chromedp.Navigate("about:blank"),
-		setDocumentContent(`<!DOCTYPE html>
-				<html>
-					<head>
-						<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
-						<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
-						<style>
-							.katex { font-size: 2em; }
-						</style>
-					</head>
-				</html>`),
-	)
-	if err != nil {
+	if err := chromedp.Do(chromedpCtx, chromedp.Navigate("about:blank"), setDocumentContent(latexDocument)); err != nil {
 		log.Fatalln("Failed to run chromedp", err)
 	}
 	registerCommandHandler("latex", latexCommandHandler)
@@ -73,249 +85,204 @@ func latexCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
-	subcommandName := i.ApplicationCommandData().Options[0].Name
-	if subcommandName == "answer" {
-		answersQueue = append(answersQueue, i)
-		if len(answersQueue) == 1 {
-			latexAnswerCommandHandler(s)
-		}
-	} else if subcommandName == "problem" {
+	switch i.ApplicationCommandData().Options[0].Name {
+	case "answer":
+		latexAnswerCommandHandler(s, i)
+	case "problem":
 		latexProblemCommandHandler(s, i)
-	} else if subcommandName == "leaderboard" {
+	case "leaderboard":
 		latexLeaderboardCommandHandler(s, i)
 	}
 }
 
-func latexAnswerCommandHandler(s *discordgo.Session) {
-	i := answersQueue[0]
+func latexAnswerCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	latex := i.ApplicationCommandData().Options[0].Options[0].StringValue()
-	picBuf, renderTime, err := renderLatex(latex, i.ID)
+	pngData, img, renderTime, err := renderLatex(latex)
 	if err != nil {
-		log.Println("Failed to render LaTeX", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Failed to render LaTeX",
-		})
+		followupError(s, i, "Failed to render LaTeX", err)
 		return
 	}
-	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Content: fmt.Sprintf("-# %d ms", renderTime),
-		Files: []*discordgo.File{
-			{
-				Name:        "image.png",
-				ContentType: "image/png",
-				Reader:      bytes.NewReader(picBuf),
-			},
-		},
-	})
-	img, _, err := image.Decode(bytes.NewReader(picBuf))
-	if err != nil {
-		log.Println("Failed to decode image", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Failed to decode image",
-		})
-		return
-	}
-	ctx := context.Background()
-	newProbs := latexProblems[i.ChannelID][:0]
-	iTime, err := discordgo.SnowflakeTimestamp(i.Interaction.ID)
-	var userID string
-	if i.Member != nil {
-		userID = i.Member.User.ID
-	} else if i.User != nil {
-		userID = i.User.ID
-	} else {
-		return
-	}
+	followup(s, i, latexImageMessage("", pngData, renderTime))
+
+	answerTime, err := discordgo.SnowflakeTimestamp(i.ID)
 	if err != nil {
 		log.Println("Error getting interaction time", err)
 		return
 	}
-	userIDInt, err := strconv.ParseInt(userID, 10, 64)
+	userID, err := strconv.ParseInt(interactionUserID(i), 10, 64)
 	if err != nil {
 		log.Println("Error parsing user id", err)
 		return
 	}
-	for _, problem := range latexProblems[i.ChannelID] {
-		if equalImages(problem.image, img) {
-			timeTaken := iTime.Sub(problem.createdTime).Seconds()
-			var bestSolution string
-			err := database.Pool.QueryRow(ctx, `
-				WITH upd AS (
-					UPDATE latex_problems
-					SET best_solution = CASE
-						WHEN octet_length(best_solution) > octet_length($2::text) THEN $2::text
-						ELSE best_solution
-					END
-					WHERE id = $1::bigint
-					RETURNING id, best_solution
-				)
-				INSERT INTO latex_solutions (problem_id, user_id, timestamp_ms, time_taken, solution)
-				SELECT id, $3::bigint, $4::bigint, $5::double precision, $2::text FROM upd
-				RETURNING (SELECT best_solution FROM upd);
-			`, problem.id, latex, userIDInt, iTime.UnixMilli(), timeTaken).Scan(&bestSolution)
-			if err != nil {
-				log.Println("Error recording solution", err)
-				s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-					Content: "Error recording solution",
-				})
-				continue
-			}
-			s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-				Content: fmt.Sprintf("# Solved %s\nTime Taken: %.2f seconds\nWPM: %.2f\n```latex\n%s```", problem.title, timeTaken, float64(len(bestSolution)) / timeTaken * 12, bestSolution),
-			})
-		} else {
-			newProbs = append(newProbs, problem)
+
+	for _, problem := range takeSolvedProblems(i.ChannelID, img) {
+		timeTaken := answerTime.Sub(problem.createdTime).Seconds()
+		var bestSolution string
+		err := database.Pool.QueryRow(context.Background(), `
+			WITH upd AS (
+				UPDATE latex_problems
+				SET best_solution = CASE
+					WHEN octet_length(best_solution) > octet_length($2::text) THEN $2::text
+					ELSE best_solution
+				END
+				WHERE id = $1::bigint
+				RETURNING id, best_solution
+			)
+			INSERT INTO latex_solutions (problem_id, user_id, timestamp_ms, time_taken, solution)
+			SELECT id, $3::bigint, $4::bigint, $5::double precision, $2::text FROM upd
+			RETURNING (SELECT best_solution FROM upd)
+		`, problem.id, latex, userID, answerTime.UnixMilli(), timeTaken).Scan(&bestSolution)
+		if err != nil {
+			followupError(s, i, "Error recording solution", err)
+			continue
 		}
-	}
-	latexProblems[i.ChannelID] = newProbs
-	answersQueue = answersQueue[1:]
-	if len(answersQueue) > 0 {
-		latexAnswerCommandHandler(s)
+		followup(s, i, latexMessage(discordgo.TextDisplay{
+			Content: fmt.Sprintf("# Solved %s\nTime Taken: %.2f seconds\nWPM: %.2f\n```latex\n%s```", problem.title, timeTaken, float64(len(bestSolution))/timeTaken*12, bestSolution),
+		}))
 	}
 }
 
 func latexProblemCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ctx := context.Background()
-	// Choose random problem
-	var problemID int64
-	var problemTitle, problemSolution string
-	err := database.Pool.QueryRow(ctx, `
-		SELECT id, title, solution FROM latex_problems ORDER BY random() LIMIT 1;
-	`).Scan(&problemID, &problemTitle, &problemSolution)
+	var problem latexProblem
+	var solution string
+	err := database.Pool.QueryRow(context.Background(), "SELECT id, title, solution FROM latex_problems ORDER BY random() LIMIT 1").Scan(&problem.id, &problem.title, &solution)
 	if err != nil {
-		log.Println("Error getting problem", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Error getting problem",
-		})
+		followupError(s, i, "Error getting problem", err)
 		return
 	}
-	// Render latex
-	picBuf, renderTime, err := renderLatex(problemSolution, i.ID)
+	pngData, img, renderTime, err := renderLatex(solution)
 	if err != nil {
-		log.Println("Failed to render LaTeX", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Failed to render LaTeX",
-		})
+		followupError(s, i, "Failed to render LaTeX", err)
 		return
 	}
-	// Decode screenshot
-	img, _, err := image.Decode(bytes.NewReader(picBuf))
-	if err != nil {
-		log.Println("Failed to decode image", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Failed to decode image",
-		})
+	if err := followup(s, i, latexImageMessage("# "+problem.title, pngData, renderTime)); err != nil {
 		return
 	}
-	// Send problem
-	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Content: fmt.Sprintf("-# %d ms\n# %s", renderTime, problemTitle),
-		Files: []*discordgo.File{
-			{
-				Name:        "image.png",
-				ContentType: "image/png",
-				Reader:      bytes.NewReader(picBuf),
-			},
-		},
-	})
-	if err != nil {
-		log.Println("Failed to send message", err)
-		return
-	}
-	// Add problem to channel slice
-	latexProblems[i.ChannelID] = append(latexProblems[i.ChannelID], latexProblem{
-		title: problemTitle,
-		id: problemID,
-		image: img,
-		createdTime: time.Now(),
-	})
+	problem.image = img
+	problem.createdTime = time.Now()
+
+	latexProblemsMu.Lock()
+	defer latexProblemsMu.Unlock()
+	latexProblems[i.ChannelID] = append(latexProblems[i.ChannelID], problem)
 }
 
 func latexLeaderboardCommandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ctx := context.Background()
-	rows, err := database.Pool.Query(ctx, `
+	entries, err := latexLeaderboard()
+	if err != nil {
+		followupError(s, i, "Error getting latex data", err)
+		return
+	}
+	var content strings.Builder
+	content.WriteString("## LaTeX Leaderboard\n")
+	for rank, e := range entries {
+		fmt.Fprintf(&content, "%d. <@%d>: **%.2f** WPM on <t:%d:d>\n", rank+1, e.UserID, e.WPM, e.Timestamp/1000)
+	}
+	followup(s, i, latexMessage(discordgo.TextDisplay{Content: content.String()}))
+}
+
+func latexLeaderboard() ([]latexLeaderboardEntry, error) {
+	rows, err := database.Pool.Query(context.Background(), `
 		SELECT s.user_id, s.timestamp_ms, octet_length(p.best_solution)::double precision / s.time_taken * 12 AS wpm
 		FROM latex_solutions s
 		JOIN latex_problems p ON p.id = s.problem_id
 		WHERE s.time_taken > 0
 		ORDER BY wpm DESC
-		LIMIT $1;
-	`, leaderboardLen)
+		LIMIT $1
+	`, latexLeaderboardLen)
 	if err != nil {
-		log.Println("Error getting latex data", err)
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-			Content: "Error getting latex data",
-		})
-		return
+		return nil, err
 	}
-	defer rows.Close()
-	var entries []latexLeaderboardEntry
-	for rows.Next() {
-		var entry latexLeaderboardEntry
-		if err := rows.Scan(&entry.userID, &entry.timestamp, &entry.wpm); err != nil {
-			log.Println("Error scanning row", err)
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	var description string
-	for i, entry := range entries {
-		description += fmt.Sprintf(
-			"%d. <@%d>: **%.2f** WPM on <t:%d:d>\n",
-			i + 1,
-			entry.userID,
-			entry.wpm,
-			entry.timestamp / 1000,
-		)
-	}
-	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Embeds: []*discordgo.MessageEmbed{
-			{
-				Title: "LaTeX Leaderboard",
-				Color: 0xC27C0E,
-				Description: description,
-			},
-		},
-	})
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[latexLeaderboardEntry])
 }
 
-func renderLatex(latex string, id string) ([]byte, int64, error) {
-	startTime := time.Now()
-	var picBuf []byte
-	err := chromedp.Do(
-		chromedpCtx,
-		chromedp.Evaluate[chromedp.Void](
-			fmt.Sprintf(`(async() =>
-				{elem = document.body.appendChild(document.createElement("div"));
-				elem.style.display = "inline-block";
-				elem.id = %q;
-				katex.render(%q, elem, {throwOnError: false, displayMode: true});
-				await document.fonts.ready;
-			})();`, id, latex),
-			chromedp.EvalAwaitPromise,
-		),
-		chromedp.Func(func(ctx context.Context, t *chromedp.Target) (err error) {
-			picBuf, err = chromedp.Screenshot(fmt.Sprintf(`[id="%s"]`, id))(ctx, t)
-			return err
-		}),
-		chromedp.Evaluate[chromedp.Void](fmt.Sprintf("document.getElementById(%q).remove();", id)),
+func renderLatex(latex string) ([]byte, image.Image, time.Duration, error) {
+	latexJSON, _ := json.Marshal(latex)
+	script := fmt.Sprintf(`(async () => {
+		katex.render(%s, document.getElementById("latex"), {throwOnError: false, displayMode: true});
+		await document.fonts.ready;
+	})()`, latexJSON)
+
+	latexRenderMu.Lock()
+	defer latexRenderMu.Unlock()
+	ctx, cancel := context.WithTimeout(chromedpCtx, latexRenderTimeout)
+	defer cancel()
+
+	start := time.Now()
+	if err := chromedp.Do(ctx, chromedp.Evaluate[chromedp.Void](script, chromedp.EvalAwaitPromise)); err != nil {
+		return nil, nil, 0, err
+	}
+	pngData, err := chromedp.Run(ctx, chromedp.Screenshot(chromedp.ID("latex")))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	renderTime := time.Since(start)
+	img, err := png.Decode(bytes.NewReader(pngData))
+	return pngData, img, renderTime, err
+}
+
+func latexMessage(components ...discordgo.MessageComponent) *discordgo.WebhookParams {
+	return &discordgo.WebhookParams{
+		Flags:           discordgo.MessageFlagsIsComponentsV2,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+		Components:      []discordgo.MessageComponent{discordgo.Container{AccentColor: new(latexColor), Components: components}},
+	}
+}
+
+func latexImageMessage(heading string, pngData []byte, renderTime time.Duration) *discordgo.WebhookParams {
+	const file = "image.png"
+	var components []discordgo.MessageComponent
+	if heading != "" {
+		components = append(components, discordgo.TextDisplay{Content: heading})
+	}
+	components = append(components,
+		discordgo.MediaGallery{Items: []discordgo.MediaGalleryItem{{Media: discordgo.UnfurledMediaItem{URL: "attachment://" + file}}}},
+		discordgo.TextDisplay{Content: fmt.Sprintf("-# %d ms", renderTime.Milliseconds())},
 	)
-	return picBuf, time.Since(startTime).Milliseconds(),err
+	params := latexMessage(components...)
+	params.Files = []*discordgo.File{{Name: file, ContentType: "image/png", Reader: bytes.NewReader(pngData)}}
+	return params
 }
 
-func equalImages(img1, img2 image.Image) bool {
-	i1Bounds := img1.Bounds()
-	i2Bounds := img2.Bounds()
-	if i1Bounds.Dx() != i2Bounds.Dx() || i1Bounds.Dy() != i2Bounds.Dy() {
+func takeSolvedProblems(channel string, answer image.Image) []latexProblem {
+	latexProblemsMu.Lock()
+	defer latexProblemsMu.Unlock()
+	var solved, unsolved []latexProblem
+	for _, problem := range latexProblems[channel] {
+		if similarImages(problem.image, answer) {
+			solved = append(solved, problem)
+		} else {
+			unsolved = append(unsolved, problem)
+		}
+	}
+	latexProblems[channel] = unsolved
+	return solved
+}
+
+func similarImages(a, b image.Image) bool {
+	aBounds, bBounds := a.Bounds(), b.Bounds()
+	if aBounds.Size() != bBounds.Size() {
 		return false
 	}
-	equalPixels := 0
-	for x := range i1Bounds.Dx() {
-		for y := range i1Bounds.Dy() {
-			if img1.At(x + i1Bounds.Min.X, y + i1Bounds.Min.Y) == img2.At(x + i2Bounds.Min.X, y + i2Bounds.Min.Y) {
-				equalPixels++
+	matching := 0
+	for y := range aBounds.Dy() {
+		for x := range aBounds.Dx() {
+			if a.At(aBounds.Min.X+x, aBounds.Min.Y+y) == b.At(bBounds.Min.X+x, bBounds.Min.Y+y) {
+				matching++
 			}
 		}
 	}
-	return float64(equalPixels) >= 0.961 * float64(i1Bounds.Dx() * i1Bounds.Dy())
+	return float64(matching) >= latexMatchThreshold*float64(aBounds.Dx()*aBounds.Dy())
+}
+
+func followup(s *discordgo.Session, i *discordgo.InteractionCreate, params *discordgo.WebhookParams) error {
+	_, err := s.FollowupMessageCreate(i.Interaction, false, params)
+	if err != nil {
+		log.Println("Error sending followup message", err)
+	}
+	return err
+}
+
+func followupError(s *discordgo.Session, i *discordgo.InteractionCreate, message string, err error) {
+	log.Println(message, err)
+	followup(s, i, &discordgo.WebhookParams{Content: message})
 }

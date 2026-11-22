@@ -38,6 +38,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 				Name:        "term",
 				Description: "Term to search for",
 				Required:    true,
+				MaxLength:   80,
 			},
 		},
 	},
