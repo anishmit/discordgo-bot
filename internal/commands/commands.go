@@ -64,6 +64,11 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Show Google Cloud credits for the bot's billing account",
 	},
 	{
+		Name:        "logs",
+		Description: "Show edited and deleted messages in this channel",
+		Contexts:    &[]discordgo.InteractionContextType{discordgo.InteractionContextGuild},
+	},
+	{
 		Name:        "gemini",
 		Description: "Configure Gemini settings",
 		Options: []*discordgo.ApplicationCommandOption{

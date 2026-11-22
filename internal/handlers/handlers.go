@@ -11,6 +11,8 @@ var (
 	componentHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){}
 	messageCreateHandlers []func(s *discordgo.Session, m *discordgo.MessageCreate)
 	messageUpdateHandlers []func(s *discordgo.Session, m *discordgo.MessageUpdate)
+	messageDeleteHandlers []func(s *discordgo.Session, m *discordgo.MessageDelete)
+	messageDeleteBulkHandlers []func(s *discordgo.Session, m *discordgo.MessageDeleteBulk)
 	readyHandlers []func(s *discordgo.Session, r *discordgo.Ready)
 )
 
@@ -28,6 +30,14 @@ func registerMessageCreateHandler(handler func(s *discordgo.Session, m *discordg
 
 func registerMessageUpdateHandler(handler func(s *discordgo.Session, m *discordgo.MessageUpdate)) {
 	messageUpdateHandlers = append(messageUpdateHandlers, handler)
+}
+
+func registerMessageDeleteHandler(handler func(s *discordgo.Session, m *discordgo.MessageDelete)) {
+	messageDeleteHandlers = append(messageDeleteHandlers, handler)
+}
+
+func registerMessageDeleteBulkHandler(handler func(s *discordgo.Session, m *discordgo.MessageDeleteBulk)) {
+	messageDeleteBulkHandlers = append(messageDeleteBulkHandlers, handler)
 }
 
 func registerReadyHandler(handler func(s *discordgo.Session, r *discordgo.Ready)) {
@@ -55,6 +65,18 @@ func OnMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 func OnMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	for _, handler := range messageUpdateHandlers {
+		handler(s, m)
+	}
+}
+
+func OnMessageDelete(s *discordgo.Session, m *discordgo.MessageDelete) {
+	for _, handler := range messageDeleteHandlers {
+		handler(s, m)
+	}
+}
+
+func OnMessageDeleteBulk(s *discordgo.Session, m *discordgo.MessageDeleteBulk) {
+	for _, handler := range messageDeleteBulkHandlers {
 		handler(s, m)
 	}
 }

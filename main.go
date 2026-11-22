@@ -27,6 +27,8 @@ func main() {
 	s.AddHandler(handlers.OnInteractionCreate)
 	s.AddHandler(handlers.OnMessageCreate)
 	s.AddHandler(handlers.OnMessageUpdate)
+	s.AddHandler(handlers.OnMessageDelete)
+	s.AddHandler(handlers.OnMessageDeleteBulk)
 	s.AddHandler(handlers.OnReady)
 
 	err := s.Open()

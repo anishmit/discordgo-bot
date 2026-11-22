@@ -131,6 +131,35 @@ ALTER TABLE public.latex_solutions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
 
 
 --
+-- Name: message_logs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.message_logs (
+    id bigint NOT NULL,
+    channel_id bigint NOT NULL,
+    message_id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    timestamp_ms bigint NOT NULL,
+    old_content text NOT NULL,
+    new_content text
+);
+
+
+--
+-- Name: message_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.message_logs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.message_logs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: messages; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -139,6 +168,18 @@ CREATE TABLE public.messages (
     user_id bigint NOT NULL,
     timestamp_ms bigint NOT NULL,
     content text
+);
+
+
+--
+-- Name: tracked_messages; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tracked_messages (
+    message_id bigint NOT NULL,
+    channel_id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    content text NOT NULL
 );
 
 
@@ -183,6 +224,14 @@ ALTER TABLE ONLY public.latex_solutions
 
 
 --
+-- Name: message_logs message_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.message_logs
+    ADD CONSTRAINT message_logs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: messages messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -191,10 +240,25 @@ ALTER TABLE ONLY public.messages
 
 
 --
+-- Name: tracked_messages tracked_messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tracked_messages
+    ADD CONSTRAINT tracked_messages_pkey PRIMARY KEY (message_id);
+
+
+--
 -- Name: latex_solutions_problem_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX latex_solutions_problem_id_idx ON public.latex_solutions USING btree (problem_id);
+
+
+--
+-- Name: message_logs_channel_id_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX message_logs_channel_id_id_idx ON public.message_logs USING btree (channel_id, id);
 
 
 --
