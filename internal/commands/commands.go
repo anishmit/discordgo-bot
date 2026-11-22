@@ -82,6 +82,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "yt",
 		Description: "Play YouTube videos in a voice channel",
+		Contexts:    &[]discordgo.InteractionContextType{discordgo.InteractionContextGuild},
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
@@ -91,7 +92,7 @@ var globalCommands = []*discordgo.ApplicationCommand{
 					{
 						Type:        discordgo.ApplicationCommandOptionString,
 						Name:        "query",
-						Description: "Search query",
+						Description: "Search query or YouTube link",
 						Required:    true,
 					},
 				},
