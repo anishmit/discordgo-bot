@@ -38,6 +38,7 @@ const (
 	ytMoveTimeout    = 15 * time.Second
 	ytSilenceTimeout = time.Second
 	ytWaitDelay      = 5 * time.Second
+	ytAttempts       = 3
 	ytBufferedFrames = int(15 * time.Minute / voice.FrameDuration)
 	ytDefaultBitrate = 64000
 	ytMaxStderr      = 4096
@@ -489,26 +490,33 @@ func ytStartStream(id string, bitrate int) *ytStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	st := &ytStream{frames: make(chan []byte, ytBufferedFrames), fetched: make(chan struct{}), cancel: cancel}
 	go func() {
-		st.err = ytDecode(ctx, id, bitrate, st.frames)
+		for attempt := 1; ; attempt++ {
+			sent, retry, err := ytDecode(ctx, id, bitrate, st.frames)
+			if !retry || sent > 0 || attempt == ytAttempts {
+				st.err = err
+				break
+			}
+			log.Printf("Retrying YouTube video %s after attempt %d: %v", id, attempt, err)
+		}
 		close(st.frames)
 		close(st.fetched)
 	}()
 	return st
 }
 
-func ytDecode(ctx context.Context, id string, bitrate int, frames chan<- []byte) error {
+func ytDecode(ctx context.Context, id string, bitrate int, frames chan<- []byte) (int, bool, error) {
 	procCtx, kill := context.WithCancel(ctx)
 	defer kill()
 
 	audioR, audioW, err := os.Pipe()
 	if err != nil {
-		return err
+		return 0, false, err
 	}
 	oggR, oggW, err := os.Pipe()
 	if err != nil {
 		audioR.Close()
 		audioW.Close()
-		return err
+		return 0, false, err
 	}
 	defer oggR.Close()
 
@@ -532,10 +540,10 @@ func ytDecode(ctx context.Context, id string, bitrate int, frames chan<- []byte)
 	audioW.Close()
 	oggW.Close()
 	if err != nil {
-		return err
+		return 0, false, err
 	}
 
-	readErr := ytReadFrames(ctx, oggR, frames)
+	sent, readErr := ytReadFrames(ctx, oggR, frames)
 	if !errors.Is(readErr, io.EOF) {
 		kill()
 	}
@@ -543,33 +551,36 @@ func ytDecode(ctx context.Context, id string, bitrate int, frames chan<- []byte)
 	ytdlpWait := ytdlp.Wait()
 	switch {
 	case ctx.Err() != nil:
-		return ctx.Err()
+		return sent, false, ctx.Err()
 	case ytdlpWait != nil:
 		log.Printf("yt-dlp failed for %s: %v\n%s", id, ytdlpWait, ytdlpErr.String())
-		return errors.New(ytReason(ytdlpErr.String()))
+		reason, transient := ytReason(ytdlpErr.String())
+		return sent, transient, errors.New(reason)
 	case ffmpegWait != nil:
 		log.Printf("ffmpeg failed for %s: %v\n%s", id, ffmpegWait, ffmpegErr.String())
-		return errors.New("the audio couldn't be decoded")
+		return sent, false, errors.New("the audio couldn't be decoded")
 	case !errors.Is(readErr, io.EOF):
-		return readErr
+		return sent, false, readErr
 	}
-	return nil
+	return sent, false, nil
 }
 
-func ytReadFrames(ctx context.Context, r io.Reader, frames chan<- []byte) error {
+func ytReadFrames(ctx context.Context, r io.Reader, frames chan<- []byte) (int, error) {
 	decoder := ogg.NewPacketDecoder(ogg.NewDecoder(bufio.NewReader(r)))
+	sent := 0
 	for {
 		packet, _, err := decoder.Decode()
 		if err != nil {
-			return err
+			return sent, err
 		}
 		if len(packet) == 0 || bytes.HasPrefix(packet, []byte("OpusHead")) || bytes.HasPrefix(packet, []byte("OpusTags")) {
 			continue
 		}
 		select {
 		case frames <- packet:
+			sent++
 		case <-ctx.Done():
-			return ctx.Err()
+			return sent, ctx.Err()
 		}
 	}
 }
@@ -588,18 +599,21 @@ func (b *ytStderr) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func ytReason(stderr string) string {
+// Extractor errors like private or removed videos start with "[youtube] <id>:" and won't go away
+// on a retry. Download errors usually will, like the 403s YouTube randomly gives cloud IPs.
+func ytReason(stderr string) (string, bool) {
 	for _, line := range slices.Backward(strings.Split(strings.TrimSpace(stderr), "\n")) {
 		if _, msg, ok := strings.Cut(line, "ERROR: "); ok {
-			if strings.HasPrefix(msg, "[") {
-				if _, rest, ok := strings.Cut(msg, ": "); ok {
-					msg = rest
-				}
+			if !strings.HasPrefix(msg, "[") {
+				return truncate(msg, 300), true
 			}
-			return truncate(msg, 300)
+			if _, rest, ok := strings.Cut(msg, ": "); ok {
+				msg = rest
+			}
+			return truncate(msg, 300), false
 		}
 	}
-	return "yt-dlp couldn't download it"
+	return "yt-dlp couldn't download it", true
 }
 
 func ytAPI(ctx context.Context, endpoint string, params url.Values, out any) error {
