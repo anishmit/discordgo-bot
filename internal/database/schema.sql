@@ -55,6 +55,17 @@ CREATE TABLE public.first_messages (
 
 
 --
+-- Name: first_send_bias; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.first_send_bias (
+    iso_date date NOT NULL,
+    sender text NOT NULL,
+    bias_us bigint NOT NULL
+);
+
+
+--
 -- Name: gemini_settings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -137,6 +148,14 @@ CREATE TABLE public.messages (
 
 ALTER TABLE ONLY public.first_messages
     ADD CONSTRAINT first_messages_pkey PRIMARY KEY (iso_date);
+
+
+--
+-- Name: first_send_bias first_send_bias_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.first_send_bias
+    ADD CONSTRAINT first_send_bias_pkey PRIMARY KEY (iso_date, sender);
 
 
 --

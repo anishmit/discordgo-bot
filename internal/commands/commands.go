@@ -14,18 +14,6 @@ var globalCommands = []*discordgo.ApplicationCommand{
 		Description: "Leaderboard for number of first messages",
 	},
 	{
-		Name:        "send",
-		Description: "Schedule sending a message at a Unix epoch time in milliseconds",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				Name:        "time",
-				Description: "Unix epoch time in milliseconds",
-				Required:    true,
-			},
-		},
-	},
-	{
 		Name: "Timestamp",
 		Type: discordgo.MessageApplicationCommand,
 	},
