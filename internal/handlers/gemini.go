@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"mime"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -29,8 +31,10 @@ import (
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
 	"google.golang.org/genai"
+	"google.golang.org/genai/interactions/models/apierrors"
 	"google.golang.org/genai/interactions/models/interactions"
 	"google.golang.org/genai/interactions/models/operations"
+	"google.golang.org/genai/interactions/retry"
 
 	"github.com/anishmit/discordgo-bot/internal/clients"
 	"github.com/anishmit/discordgo-bot/internal/database"
@@ -38,6 +42,8 @@ import (
 
 const (
 	defaultModel           = interactions.ModelGemini4Neon
+	fallbackModel          = interactions.ModelGemini35FlashLite
+	fallbackThinkingLevel  = interactions.ThinkingLevelLow
 	maxMsgLength           = 2000
 	maxEmbedLength         = 4096
 	embedColor             = 0xffffff
@@ -46,8 +52,9 @@ const (
 	thoughtsThreadName     = "Thoughts"
 	threadArchiveMinutes   = 1440
 	maxHistoryEntries      = 50
-	maxInteractionAttempts = 3
-	interactionRetryDelay  = 2 * time.Second
+	maxInteractionAttempts = 5
+	interactionRetryDelay  = time.Second
+	maxInteractionBackoff  = time.Minute
 	maxMediaBytes          = 20 << 20
 	mediaFetchTimeout      = 30 * time.Second
 	settingsHeading        = "## Settings"
@@ -322,7 +329,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	startTime := time.Now()
 	msg, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
-		Content:         thinkingSubtext(us),
+		Content:         thinkingSubtext(us, 0),
 		Reference:       m.Reference(),
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	})
@@ -332,7 +339,7 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	answer := msgRef{channelID: m.ChannelID, messageID: msg.ID}
 
-	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, m.ID, answer, &thoughtsThread{answer: answer}, us)
+	text, turnSteps, totalTokens, err := generateResponse(context.Background(), s, m.ChannelID, m.GuildID, m.ID, answer, &thoughtsThread{answer: answer}, &us)
 	if err != nil {
 		log.Println("Error generating response", err)
 		editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), err.Error(), false)
@@ -571,10 +578,23 @@ func compareSnowflakes(a, b string) int {
 	return cmp.Or(cmp.Compare(len(a), len(b)), strings.Compare(a, b))
 }
 
-func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID, mentionID string, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, []interactions.Step, int, error) {
+func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guildID, mentionID string, answer msgRef, thoughts *thoughtsThread, us *userSettings) (string, []interactions.Step, int, error) {
+	input := channelHistory(channelID, mentionID)
+	text, turn, tokens, err := runTurn(ctx, s, guildID, input, answer, thoughts, *us, maxInteractionAttempts)
+	if !errors.As(err, new(interactionFailure)) {
+		return text, turn, tokens, err
+	}
+	log.Printf("Falling back from %s to %s: %v", us.Model, fallbackModel, err)
+	us.Model, us.ThinkingLevel = fallbackModel, fallbackThinkingLevel
+	editMessage(s, answer, thinkingSubtext(*us, 0), "", false)
+	text, turn, fallbackTokens, err := runTurn(ctx, s, guildID, input, answer, thoughts, *us, 1)
+	return text, turn, tokens + fallbackTokens, err
+}
+
+func runTurn(ctx context.Context, s *discordgo.Session, guildID string, input []interactions.Step, answer msgRef, thoughts *thoughtsThread, us userSettings, attempts int) (string, []interactions.Step, int, error) {
 	create := interactions.CreateModelInteraction{
 		Model:             us.Model,
-		Input:             genai.Ptr(interactions.NewInteractionsInput(channelHistory(channelID, mentionID))),
+		Input:             genai.Ptr(interactions.NewInteractionsInput(input)),
 		SystemInstruction: genai.Ptr(fmt.Sprintf(systemInstructionFmt, s.State.User.ID, delimiter)),
 		SafetySettings:    safetySettings,
 		Tools:             enabledTools(us),
@@ -588,14 +608,18 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	for {
 		var interactionID, text string
 		var steps []interactions.Step
-		err := retryInteraction(ctx, func() (err error) {
+		subtext := thinkingSubtext(us, 0)
+		err := retryInteraction(ctx, attempts, func() (err error) {
 			var tokens int
-			interactionID, text, tokens, err = streamInteraction(ctx, s, create, answer, thoughts, us)
+			interactionID, text, tokens, err = streamInteraction(ctx, s, create, answer, thoughts, us, subtext)
 			totalTokens += tokens
 			if err == nil {
 				steps, err = finishedInteraction(ctx, interactionID)
 			}
 			return err
+		}, func(n int) {
+			subtext = thinkingSubtext(us, n)
+			editMessage(s, answer, subtext, "", false)
 		})
 		answerText.WriteString(text)
 		if err != nil {
@@ -621,18 +645,34 @@ func generateResponse(ctx context.Context, s *discordgo.Session, channelID, guil
 	}
 }
 
-func retryInteraction(ctx context.Context, attempt func() error) error {
+var (
+	noRetries  = operations.WithRetries(retry.Config{Strategy: "none"})
+	getRetries = operations.WithRetries(retry.Config{
+		Strategy: "attempt-count-backoff",
+		Backoff: &retry.BackoffStrategy{
+			InitialInterval: int(interactionRetryDelay.Milliseconds()),
+			MaxInterval:     int(maxInteractionBackoff.Milliseconds()),
+			Exponent:        2,
+		},
+		RetryConnectionErrors: true,
+		MaxRetries:            new(maxInteractionAttempts - 1),
+	})
+)
+
+func retryInteraction(ctx context.Context, attempts int, attempt func() error, retrying func(n int)) error {
 	for n := 1; ; n++ {
 		err := attempt()
 		var failure interactionFailure
-		if !errors.As(err, &failure) || n == maxInteractionAttempts {
+		if !errors.As(err, &failure) || n == attempts {
 			return err
 		}
-		log.Printf("Retrying interaction after attempt %d: %v", n, err)
+		retrying(n)
+		delay := min(interactionRetryDelay<<(n-1)+rand.N(time.Second), maxInteractionBackoff)
+		log.Printf("Retrying interaction in %v after attempt %d: %v", delay.Round(time.Millisecond), n, err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(n) * interactionRetryDelay):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -699,11 +739,34 @@ func queryDb(ctx context.Context, query string, args ...any) ([]map[string]any, 
 	}
 	return pgx.CollectRows(rows, pgx.RowToMap)
 }
-func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings) (string, string, int, error) {
+func retryableRequest(err error) bool {
+	var netErr net.Error
+	var serverErr *apierrors.CreateInteractionServerError
+	var clientErr *apierrors.CreateInteractionClientError
+	var validationErr *apierrors.ResponseValidationError
+	var apiErr *apierrors.APIError
+	status := 0
+	switch {
+	case errors.As(err, &netErr), errors.As(err, &serverErr):
+		return true
+	case errors.As(err, &clientErr):
+		status = clientErr.HTTPMeta.Response.StatusCode
+	case errors.As(err, &validationErr):
+		status = validationErr.StatusCode
+	case errors.As(err, &apiErr):
+		status = apiErr.StatusCode
+	}
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func streamInteraction(ctx context.Context, s *discordgo.Session, create interactions.CreateModelInteraction, answer msgRef, thoughts *thoughtsThread, us userSettings, subtext string) (string, string, int, error) {
 	body := operations.NewCreateInteractionRequestBody(create)
 
-	res, err := clients.GeminiClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body})
+	res, err := clients.GeminiClient.Interactions.Create(ctx, operations.CreateInteractionRequest{Body: body}, noRetries)
 	if err != nil {
+		if retryableRequest(err) {
+			err = interactionFailure{err}
+		}
 		return "", "", 0, err
 	}
 	stream := res.InteractionSSEStreamEvent
@@ -749,7 +812,7 @@ func streamInteraction(ctx context.Context, s *discordgo.Session, create interac
 			return "", text.String(), totalTokens, interactionFailure{errors.New("Stream errored")}
 		}
 		if text.Len() != lastTextLen && time.Since(lastEdit) >= streamEditInterval {
-			editMessage(s, answer, thinkingSubtext(us), text.String(), shouldRender(us, text.String()))
+			editMessage(s, answer, subtext, text.String(), shouldRender(us, text.String()))
 			lastEdit, lastTextLen = time.Now(), text.Len()
 		}
 	}
@@ -763,7 +826,7 @@ func finishedInteraction(ctx context.Context, interactionID string) ([]interacti
 	if interactionID == "" {
 		return nil, errors.New("Interaction did not create an ID")
 	}
-	res, err := clients.GeminiClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID})
+	res, err := clients.GeminiClient.Interactions.Get(ctx, operations.GetInteractionByIDRequest{ID: interactionID}, getRetries)
 	if err != nil {
 		return nil, err
 	}
@@ -1152,11 +1215,19 @@ func modelSubtext(us userSettings) string {
 	if us.ThinkingLevel != "" {
 		level = string(us.ThinkingLevel)
 	}
-	return fmt.Sprintf("🤖 %s    🧠 %s", us.Model, level)
+	subtext := fmt.Sprintf("🤖 %s    🧠 %s", us.Model, level)
+	if us.Model == fallbackModel {
+		subtext = "↪️ fell back    " + subtext
+	}
+	return subtext
 }
 
-func thinkingSubtext(us userSettings) string {
-	return "-# ⏳ thinking    " + modelSubtext(us)
+func thinkingSubtext(us userSettings, retries int) string {
+	subtext := "-# ⏳ thinking    "
+	if retries > 0 {
+		subtext += fmt.Sprintf("🔁 retry %d/%d    ", retries, maxInteractionAttempts-1)
+	}
+	return subtext + modelSubtext(us)
 }
 
 func doneSubtext(us userSettings, elapsed time.Duration, totalTokens int) string {
