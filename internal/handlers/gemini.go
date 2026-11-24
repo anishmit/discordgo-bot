@@ -101,6 +101,11 @@ var delimiter = uuid.NewString()
 
 var mediaClient = &http.Client{Timeout: mediaFetchTimeout}
 
+var (
+	errMediaDownload = errors.New("it couldn't be downloaded")
+	errMediaTooLarge = fmt.Errorf("it's larger than %d MB", maxMediaBytes>>20)
+)
+
 var mediaTypeAliases = map[string]string{
 	"video/quicktime": "video/mov",
 	"video/x-msvideo": "video/avi",
@@ -109,6 +114,12 @@ var mediaTypeAliases = map[string]string{
 	"audio/wave":      "audio/wav",
 	"audio/mp4":       "audio/m4a",
 	"audio/x-m4a":     "audio/m4a",
+	"audio/x-mpeg":    "audio/mpeg",
+	"audio/mpeg3":     "audio/mpeg",
+	"audio/x-mpeg-3":  "audio/mpeg",
+	"audio/x-mp3":     "audio/mpeg",
+	"audio/mpg":       "audio/mpeg",
+	"application/ogg": "audio/ogg",
 }
 
 var timeZone = loadLocation(historyTimeZone)
@@ -241,6 +252,7 @@ type msgRef struct {
 
 type historyEntry struct {
 	msgID string
+	ready chan struct{}
 	steps []interactions.Step
 }
 
@@ -269,7 +281,7 @@ type userSettings struct {
 
 var (
 	historyMu sync.Mutex
-	history   = map[string][]historyEntry{}
+	history   = map[string][]*historyEntry{}
 
 	settingsMu sync.Mutex
 )
@@ -295,16 +307,12 @@ func init() {
 }
 
 func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author == nil || m.Author.ID == s.State.User.ID || (m.Content == "" && len(m.Attachments) == 0) {
+	if m.Author == nil || m.Author.ID == s.State.User.ID || (m.Content == "" && len(m.Attachments) == 0 && len(m.MessageSnapshots) == 0) {
 		return
 	}
 
-	entry, err := messageEntry(s, m.Message)
-	if err != nil {
-		log.Println("Error building history entry", err)
-		return
-	}
-	appendHistory(m.ChannelID, entry)
+	entry := appendHistory(m.ChannelID, m.ID)
+	entry.resolve(messageSteps(s, m.Message))
 
 	if !isBotMentioned(s, m) {
 		return
@@ -331,19 +339,16 @@ func geminiMsgCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	editMessage(s, answer, doneSubtext(us, time.Since(startTime), totalTokens), text, shouldRender(us, text))
-	appendHistory(m.ChannelID, historyEntry{msgID: msg.ID, steps: turnSteps})
+	appendHistory(m.ChannelID, msg.ID).resolve(turnSteps)
 }
 
 func geminiMsgUpdateHandler(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID {
 		return
 	}
-	entry, err := messageEntry(s, m.Message)
-	if err != nil {
-		log.Println("Error building history entry", err)
-		return
+	if entry := updateHistory(m.ChannelID, m.ID); entry != nil {
+		entry.resolve(messageSteps(s, m.Message))
 	}
-	updateHistory(m.ChannelID, entry)
 }
 
 func isBotMentioned(s *discordgo.Session, m *discordgo.MessageCreate) bool {
@@ -366,31 +371,46 @@ func logEntry(msgID, author, authorID, text string, media []interactions.Content
 	return append(contents, textContent(fmt.Sprintf("\ndelimiter: %s\n", delimiter)))
 }
 
-func messageEntry(s *discordgo.Session, m *discordgo.Message) (historyEntry, error) {
+func messageSteps(s *discordgo.Session, m *discordgo.Message) []interactions.Step {
 	text, err := m.ContentWithMoreMentionsReplaced(s)
 	if err != nil {
-		return historyEntry{}, err
+		text = m.ContentWithMentionsReplaced()
 	}
 
+	media := messageMedia(m)
+	for _, snapshot := range m.MessageSnapshots {
+		if forwarded := snapshot.Message; forwarded != nil {
+			media = append(media, textContent("\nforwarded message: "+forwarded.ContentWithMentionsReplaced()))
+			media = append(media, messageMedia(forwarded)...)
+		}
+	}
+	step := interactions.NewStep(interactions.UserInputStep{
+		Content: logEntry(m.ID, displayName(m), m.Author.ID, text, media),
+	})
+	return []interactions.Step{step}
+}
+
+func messageMedia(m *discordgo.Message) []interactions.Content {
 	var media []interactions.Content
 	for _, att := range m.Attachments {
-		if content, ok := fetchMedia(att.URL, att.ContentType); ok {
-			media = append(media, content)
+		content, err := fetchMedia(att.URL, att.ContentType)
+		if err != nil {
+			log.Printf("Skipping attachment %s: %v", att.Filename, err)
+			media = append(media, textContent(fmt.Sprintf("\nattachment: %s (not included because %v)", att.Filename, err)))
+			continue
 		}
+		media = append(media, textContent("\nattachment: "+att.Filename), content)
 	}
 	for _, embed := range m.Embeds {
 		url := embedMediaURL(embed)
 		if url == "" {
 			continue
 		}
-		if content, ok := fetchMedia(url, ""); ok && content.Type != interactions.ContentTypeText {
+		if content, err := fetchMedia(url, ""); err == nil && content.Type != interactions.ContentTypeText {
 			media = append(media, content)
 		}
 	}
-	step := interactions.NewStep(interactions.UserInputStep{
-		Content: logEntry(m.ID, displayName(m), m.Author.ID, text, media),
-	})
-	return historyEntry{msgID: m.ID, steps: []interactions.Step{step}}, nil
+	return media
 }
 
 func textContent(text string) interactions.Content {
@@ -415,60 +435,60 @@ func embedMediaURL(e *discordgo.MessageEmbed) string {
 	return ""
 }
 
-func fetchMedia(url, contentType string) (interactions.Content, bool) {
+func fetchMedia(url, contentType string) (interactions.Content, error) {
 	res, err := mediaClient.Get(url)
 	if err != nil {
 		log.Println("Error fetching media", err)
-		return interactions.Content{}, false
+		return interactions.Content{}, errMediaDownload
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		log.Println("Error fetching media", res.Status)
-		return interactions.Content{}, false
+		return interactions.Content{}, errMediaDownload
+	}
+	if res.ContentLength > maxMediaBytes {
+		return interactions.Content{}, errMediaTooLarge
 	}
 
 	data, err := io.ReadAll(io.LimitReader(res.Body, maxMediaBytes+1))
 	if err != nil {
 		log.Println("Error reading media", err)
-		return interactions.Content{}, false
+		return interactions.Content{}, errMediaDownload
 	}
 	if len(data) > maxMediaBytes {
-		log.Printf("Skipping media larger than %d bytes", maxMediaBytes)
-		return interactions.Content{}, false
+		return interactions.Content{}, errMediaTooLarge
 	}
 
 	if contentType == "" {
 		contentType = res.Header.Get("Content-Type")
 	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		log.Println("Error parsing media type", err)
-		return interactions.Content{}, false
+	if err != nil || mediaType == "application/octet-stream" {
+		mediaType, _, _ = mime.ParseMediaType(http.DetectContentType(data))
 	}
 	return mediaContent(mediaType, data)
 }
 
-func mediaContent(mediaType string, data []byte) (interactions.Content, bool) {
+func mediaContent(mediaType string, data []byte) (interactions.Content, error) {
 	if alias, ok := mediaTypeAliases[mediaType]; ok {
 		mediaType = alias
 	}
 	if imageType := interactions.ImageContentMimeType(mediaType); imageType.IsExact() {
-		return interactions.NewContent(interactions.ImageContent{Data: base64Pointer(data), MimeType: &imageType}), true
+		return interactions.NewContent(interactions.ImageContent{Data: base64Pointer(data), MimeType: &imageType}), nil
 	}
 	if audioType := interactions.AudioContentMimeType(mediaType); audioType.IsExact() {
-		return interactions.NewContent(interactions.AudioContent{Data: base64Pointer(data), MimeType: &audioType}), true
+		return interactions.NewContent(interactions.AudioContent{Data: base64Pointer(data), MimeType: &audioType}), nil
 	}
 	if videoType := interactions.VideoContentMimeType(mediaType); videoType.IsExact() {
-		return interactions.NewContent(interactions.VideoContent{Data: base64Pointer(data), MimeType: &videoType}), true
+		return interactions.NewContent(interactions.VideoContent{Data: base64Pointer(data), MimeType: &videoType}), nil
 	}
 	if documentType := interactions.DocumentContentMimeType(mediaType); documentType.IsExact() {
-		return interactions.NewContent(interactions.DocumentContent{Data: base64Pointer(data), MimeType: &documentType}), true
+		return interactions.NewContent(interactions.DocumentContent{Data: base64Pointer(data), MimeType: &documentType}), nil
 	}
 	if strings.HasPrefix(mediaType, "text/") {
-		return textContent(string(data)), true
+		return textContent(string(data)), nil
 	}
-	log.Printf("Skipping media with unsupported type %q", mediaType)
-	return interactions.Content{}, false
+	return interactions.Content{}, fmt.Errorf("%s files aren't supported", mediaType)
 }
 
 func base64Pointer(data []byte) *string {
@@ -483,29 +503,43 @@ func displayName(m *discordgo.Message) string {
 	return m.Author.DisplayName()
 }
 
-func appendHistory(channelID string, entry historyEntry) {
+func newHistoryEntry(msgID string) *historyEntry {
+	return &historyEntry{msgID: msgID, ready: make(chan struct{})}
+}
+
+func (e *historyEntry) resolve(steps []interactions.Step) {
+	e.steps = steps
+	close(e.ready)
+}
+
+func appendHistory(channelID, msgID string) *historyEntry {
+	entry := newHistoryEntry(msgID)
 	historyMu.Lock()
 	defer historyMu.Unlock()
 	entries := history[channelID]
-	i, _ := slices.BinarySearchFunc(entries, entry.msgID, func(e historyEntry, id string) int {
+	i, _ := slices.BinarySearchFunc(entries, msgID, func(e *historyEntry, id string) int {
 		return compareSnowflakes(e.msgID, id)
 	})
 	entries = slices.Insert(entries, i, entry)
 	if n := len(entries); n > maxHistoryEntries {
+		clear(entries[:n-maxHistoryEntries])
 		entries = entries[n-maxHistoryEntries:]
 	}
 	history[channelID] = entries
+	return entry
 }
 
-func updateHistory(channelID string, entry historyEntry) {
+func updateHistory(channelID, msgID string) *historyEntry {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	for i := range history[channelID] {
-		if history[channelID][i].msgID == entry.msgID {
+	for i, e := range history[channelID] {
+		if e.msgID == msgID {
+			entry := newHistoryEntry(msgID)
 			history[channelID][i] = entry
-			return
+			return entry
 		}
 	}
+	return nil
 }
 
 func clearHistory(channelID string) {
@@ -516,12 +550,18 @@ func clearHistory(channelID string) {
 
 func channelHistory(channelID, upToID string) []interactions.Step {
 	historyMu.Lock()
-	defer historyMu.Unlock()
-	var all []interactions.Step
+	var entries []*historyEntry
 	for _, e := range history[channelID] {
 		if compareSnowflakes(e.msgID, upToID) > 0 {
 			break
 		}
+		entries = append(entries, e)
+	}
+	historyMu.Unlock()
+
+	var all []interactions.Step
+	for _, e := range entries {
+		<-e.ready
 		all = append(all, e.steps...)
 	}
 	return all
