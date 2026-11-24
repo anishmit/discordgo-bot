@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,11 +55,16 @@ var (
 )
 
 type ytVideo struct {
-	id       string
-	title    string
-	channel  string
-	duration time.Duration
-	live     bool
+	id        string
+	title     string
+	channel   string
+	channelID string
+	thumbnail string
+	duration  time.Duration
+	live      bool
+	views     int64
+	likes     int64
+	published time.Time
 }
 
 type ytTrack struct {
@@ -218,27 +224,35 @@ func ytQueue(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	var components []discordgo.MessageComponent
-	var left time.Duration
 	if current != nil {
-		if !current.live {
-			left += max(current.duration-elapsed, 0)
-		}
-		components = append(components, ytText("**Now playing**\n%s `%s / %s` · <@%s>",
-			ytLink(current.ytVideo), ytClock(elapsed), ytLength(current.ytVideo), current.requester))
+		components = append(components, ytCard(current.ytVideo, "**Now playing**\n%s\n%s\n`%s / %s` · <@%s>",
+			ytLink(current.ytVideo), ytDetails(current.ytVideo), ytClock(elapsed), ytLength(current.ytVideo), current.requester))
 	}
 	if len(queue) > 0 {
-		for _, t := range queue {
-			if !t.live {
-				left += t.duration
-			}
-		}
 		if len(components) > 0 {
 			components = append(components, discordgo.Separator{})
 		}
 		components = append(components, ytText("**Up next**\n%s", ytList(queue, true)))
 	}
+	left, _ := ytTimeLeft(current, elapsed, queue)
 	components = append(components, ytText("-# %d queued · %s left", len(queue), ytClock(left)))
 	ytRespond(s, i, false, components...)
+}
+
+func ytTimeLeft(current *ytTrack, elapsed time.Duration, queue []*ytTrack) (time.Duration, bool) {
+	var left time.Duration
+	live := current != nil && current.live
+	if current != nil && !current.live {
+		left = max(current.duration-elapsed, 0)
+	}
+	for _, t := range queue {
+		if t.live {
+			live = true
+		} else {
+			left += t.duration
+		}
+	}
+	return left, live
 }
 
 func ytMove(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -304,6 +318,9 @@ func ytEnqueue(s *discordgo.Session, i *discordgo.InteractionCreate, channelID s
 		ytPlayers[i.GuildID] = p
 	}
 	p.mu.Lock()
+	wait, live := ytTimeLeft(p.current, time.Duration(p.played.Load())*voice.FrameDuration, p.queue)
+	position := len(p.queue) + 1
+	idle := p.current == nil && len(p.queue) == 0
 	p.queue = append(p.queue, tracks...)
 	if p.fetched {
 		p.prefetchLocked(s)
@@ -314,10 +331,18 @@ func ytEnqueue(s *discordgo.Session, i *discordgo.InteractionCreate, channelID s
 	if start {
 		go p.run(s)
 	}
-	if len(tracks) == 1 {
-		return []discordgo.MessageComponent{ytText("Added %s `%s` to the queue.", ytLink(tracks[0].ytVideo), ytLength(tracks[0].ytVideo))}
+	if len(tracks) > 1 {
+		return []discordgo.MessageComponent{ytText("Added **%d** videos to the queue.\n%s", len(tracks), ytList(tracks, false))}
 	}
-	return []discordgo.MessageComponent{ytText("Added **%d** videos to the queue.\n%s", len(tracks), ytList(tracks, false))}
+	v := tracks[0].ytVideo
+	text := fmt.Sprintf("**Added to the queue**\n%s `%s`\n%s", ytLink(v), ytLength(v), ytDetails(v))
+	if !idle {
+		text += fmt.Sprintf("\n-# #%d in the queue", position)
+		if !live {
+			text += " · plays in " + ytClock(wait)
+		}
+	}
+	return []discordgo.MessageComponent{ytCard(v, "%s", text)}
 }
 
 func ytPlayerOf(guildID string) *ytPlayer {
@@ -673,19 +698,33 @@ func ytVideos(ctx context.Context, ids []string) ([]ytVideo, error) {
 		Items []struct {
 			ID      string `json:"id"`
 			Snippet struct {
-				Title                string `json:"title"`
-				ChannelTitle         string `json:"channelTitle"`
-				LiveBroadcastContent string `json:"liveBroadcastContent"`
+				Title                string    `json:"title"`
+				ChannelID            string    `json:"channelId"`
+				ChannelTitle         string    `json:"channelTitle"`
+				PublishedAt          time.Time `json:"publishedAt"`
+				LiveBroadcastContent string    `json:"liveBroadcastContent"`
+				Thumbnails           struct {
+					Medium struct {
+						URL string `json:"url"`
+					} `json:"medium"`
+					Maxres struct {
+						URL string `json:"url"`
+					} `json:"maxres"`
+				} `json:"thumbnails"`
 			} `json:"snippet"`
 			ContentDetails struct {
 				Duration string `json:"duration"`
 			} `json:"contentDetails"`
+			Statistics struct {
+				ViewCount string `json:"viewCount"`
+				LikeCount string `json:"likeCount"`
+			} `json:"statistics"`
 		} `json:"items"`
 	}
 	err := ytAPI(ctx, "videos", url.Values{
-		"part":   {"snippet,contentDetails"},
+		"part":   {"snippet,contentDetails,statistics"},
 		"id":     {strings.Join(ids, ",")},
-		"fields": {"items(id,snippet(title,channelTitle,liveBroadcastContent),contentDetails/duration)"},
+		"fields": {"items(id,snippet(title,channelId,channelTitle,publishedAt,liveBroadcastContent,thumbnails(medium/url,maxres/url)),contentDetails/duration,statistics(viewCount,likeCount))"},
 	}, &res)
 	if err != nil {
 		return nil, err
@@ -696,12 +735,19 @@ func ytVideos(ctx context.Context, ids []string) ([]ytVideo, error) {
 		if item.Snippet.LiveBroadcastContent == "upcoming" {
 			continue
 		}
+		views, _ := strconv.ParseInt(item.Statistics.ViewCount, 10, 64)
+		likes, _ := strconv.ParseInt(item.Statistics.LikeCount, 10, 64)
 		found[item.ID] = ytVideo{
-			id:       item.ID,
-			title:    item.Snippet.Title,
-			channel:  item.Snippet.ChannelTitle,
-			duration: ytParseDuration(item.ContentDetails.Duration),
-			live:     item.Snippet.LiveBroadcastContent == "live",
+			id:        item.ID,
+			title:     item.Snippet.Title,
+			channel:   item.Snippet.ChannelTitle,
+			channelID: item.Snippet.ChannelID,
+			thumbnail: cmp.Or(item.Snippet.Thumbnails.Maxres.URL, item.Snippet.Thumbnails.Medium.URL, "https://i.ytimg.com/vi/"+item.ID+"/mqdefault.jpg"),
+			duration:  ytParseDuration(item.ContentDetails.Duration),
+			live:      item.Snippet.LiveBroadcastContent == "live",
+			views:     views,
+			likes:     likes,
+			published: item.Snippet.PublishedAt,
 		}
 	}
 	videos := make([]ytVideo, 0, len(found))
@@ -809,6 +855,43 @@ func ytList(tracks []*ytTrack, requesters bool) string {
 
 func ytLink(v ytVideo) string {
 	return fmt.Sprintf("[%s](https://youtu.be/%s)", ytEscaper.Replace(v.title), v.id)
+}
+
+func ytDetails(v ytVideo) string {
+	details := []string{fmt.Sprintf("[%s](https://www.youtube.com/channel/%s)", ytEscaper.Replace(v.channel), v.channelID)}
+	if v.views > 0 {
+		details = append(details, ytCount(v.views)+" views")
+	}
+	if v.likes > 0 {
+		details = append(details, ytCount(v.likes)+" likes")
+	}
+	if !v.published.IsZero() {
+		details = append(details, fmt.Sprintf("<t:%d:R>", v.published.Unix()))
+	}
+	return strings.Join(details, " · ")
+}
+
+func ytCount(n int64) string {
+	for _, unit := range []struct {
+		size   int64
+		suffix string
+	}{{1e9, "B"}, {1e6, "M"}, {1e3, "K"}} {
+		if n < unit.size {
+			continue
+		}
+		if tenths := n * 10 / unit.size; tenths < 100 {
+			return strconv.FormatFloat(float64(tenths)/10, 'f', -1, 64) + unit.suffix
+		}
+		return strconv.FormatInt(n/unit.size, 10) + unit.suffix
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+func ytCard(v ytVideo, format string, args ...any) discordgo.Section {
+	return discordgo.Section{
+		Components: []discordgo.MessageComponent{ytText(format, args...)},
+		Accessory:  discordgo.Thumbnail{Media: discordgo.UnfurledMediaItem{URL: v.thumbnail}, Description: new(v.title)},
+	}
 }
 
 func ytLength(v ytVideo) string {
