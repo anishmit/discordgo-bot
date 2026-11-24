@@ -59,25 +59,25 @@ func OnInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 func OnMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	for _, handler := range messageCreateHandlers {
-		handler(s, m)
+		go handler(s, m)
 	}
 }
 
 func OnMessageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
 	for _, handler := range messageUpdateHandlers {
-		handler(s, m)
+		go handler(s, m)
 	}
 }
 
 func OnMessageDelete(s *discordgo.Session, m *discordgo.MessageDelete) {
 	for _, handler := range messageDeleteHandlers {
-		handler(s, m)
+		go handler(s, m)
 	}
 }
 
 func OnMessageDeleteBulk(s *discordgo.Session, m *discordgo.MessageDeleteBulk) {
 	for _, handler := range messageDeleteBulkHandlers {
-		handler(s, m)
+		go handler(s, m)
 	}
 }
 
